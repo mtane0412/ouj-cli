@@ -111,6 +111,42 @@ describe("login", () => {
 		);
 	});
 
+	it.each([
+		["想定外のホスト", "https://evil.example.test/cas/login"],
+		["暗号化されていない通信", "http://sso.ouj.ac.jp/cas/login"],
+	])(
+		"認証画面が%sの場合はパスワードを送らずエラーにする",
+		async (_label, casUrl) => {
+			// 前提: ポータルのリダイレクト先が正規の CAS ではない
+			const posts: RecordedPost[] = [];
+			const client = new HttpClient(async (input, init) => {
+				const url = String(input);
+				if (init?.method === "POST") {
+					posts.push({ url, body: new URLSearchParams(String(init.body)) });
+					if (url.endsWith("/portal/sso/")) {
+						return new Response(null, {
+							status: 302,
+							headers: { location: casUrl },
+						});
+					}
+					return new Response("{}");
+				}
+				return new Response(url === PORTAL_URL ? PORTAL_PAGE : CAS_PAGE);
+			});
+
+			await expect(login(client, credentials)).rejects.toThrow(
+				"認証画面の接続先",
+			);
+
+			// 検証: パスワードを含む送信が 1 件もない
+			expect(
+				posts.some(
+					(post) => post.body.get("password") === credentials.password,
+				),
+			).toBe(false);
+		},
+	);
+
 	it("認証画面に戻された場合はエラーにする", async () => {
 		const client = fakeSite([], () => new Response(CAS_PAGE));
 

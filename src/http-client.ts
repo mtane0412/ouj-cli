@@ -7,6 +7,7 @@ import { CookieJar } from "tough-cookie";
 
 const MAX_REDIRECTS = 10;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const METHOD_PRESERVING_STATUSES = new Set([307, 308]);
 
 /** 出力してよいパスを返す。URL に含まれるセッション ID とクエリを取り除く */
 export function pathWithoutSession(url: string): string {
@@ -106,8 +107,13 @@ export class HttpClient {
 
 			const location = response.headers.get("location");
 			if (REDIRECT_STATUSES.has(response.status) && location) {
-				url = new URL(location, url).toString();
-				init = { method: "GET" };
+				const next = new URL(location, url);
+				// 別オリジンへフォーム値を渡さないよう、本文を保つのは同一オリジンの 307/308 だけにする
+				const keepsRequest =
+					METHOD_PRESERVING_STATUSES.has(response.status) &&
+					next.origin === new URL(url).origin;
+				url = next.toString();
+				if (!keepsRequest) init = { method: "GET" };
 				continue;
 			}
 			if (!response.ok) {

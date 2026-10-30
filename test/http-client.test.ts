@@ -91,6 +91,41 @@ describe("HttpClient", () => {
 		]);
 	});
 
+	it("307 は同一オリジンなら POST と本文を保ち、別オリジンなら GET に変える", async () => {
+		const requests: { url: string; method?: string; body?: unknown }[] = [];
+		const client = new HttpClient(async (input, init) => {
+			const url = String(input);
+			requests.push({ url, method: init?.method, body: init?.body });
+			if (url.endsWith("/same")) {
+				return new Response(null, {
+					status: 307,
+					headers: { location: "/kept" },
+				});
+			}
+			if (url.endsWith("/cross")) {
+				return new Response(null, {
+					status: 307,
+					headers: { location: "https://other.test/dropped" },
+				});
+			}
+			return new Response("到着しました");
+		});
+
+		await client.post("https://example.test/same", { 氏名: "放送太郎" });
+		await client.post("https://example.test/cross", { 氏名: "放送太郎" });
+
+		expect(requests[1]).toMatchObject({
+			url: "https://example.test/kept",
+			method: "POST",
+			body: new URLSearchParams({ 氏名: "放送太郎" }).toString(),
+		});
+		expect(requests[3]).toEqual({
+			url: "https://other.test/dropped",
+			method: "GET",
+			body: undefined,
+		});
+	});
+
 	it("リダイレクトが終わらない場合はエラーにする", async () => {
 		const client = new HttpClient(
 			async () =>

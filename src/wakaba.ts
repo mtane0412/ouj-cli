@@ -10,6 +10,7 @@ import {
 } from "./http-client.js";
 
 const PORTAL_ORIGIN = "https://www.wakaba.ouj.ac.jp";
+const CAS_ORIGIN = "https://sso.ouj.ac.jp";
 const LOGIN_FORM_SELECTOR = 'form[name="login_loginActionForm"]';
 const MENU_FORM_SELECTOR = 'form[name="common_generalPurposeActionForm"]';
 
@@ -104,6 +105,12 @@ export async function login(
 		);
 	}
 
+	// 認証情報を渡す前に、リダイレクト先が正規の CAS であることを確かめる
+	if (new URL(casPage.url).origin !== CAS_ORIGIN) {
+		throw new Error(
+			`認証画面の接続先が想定と異なります（${new URL(casPage.url).origin}）`,
+		);
+	}
 	const home = await client.post(casPage.url, { ...hidden, ...credentials });
 	const $home = cheerio.load(home.body);
 	if (!$home(MENU_FORM_SELECTOR).length) {
