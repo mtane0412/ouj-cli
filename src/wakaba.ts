@@ -3,7 +3,11 @@
  * 読み取り専用のメニューだけを定義し、申請や投稿などの送信操作は扱わない。
  */
 import * as cheerio from "cheerio";
-import type { HttpClient, Page } from "./http-client.js";
+import {
+	type HttpClient,
+	type Page,
+	pathWithoutSession,
+} from "./http-client.js";
 
 const PORTAL_ORIGIN = "https://www.wakaba.ouj.ac.jp";
 const LOGIN_FORM_SELECTOR = 'form[name="login_loginActionForm"]';
@@ -104,9 +108,9 @@ export async function login(
 	const $home = cheerio.load(home.body);
 	if (!$home(MENU_FORM_SELECTOR).length) {
 		// URL にはチケットやセッション ID が含まれる場合があるため、取り除いて出す
-		const { host, pathname } = new URL(home.url);
+		const { host } = new URL(home.url);
 		throw new Error(
-			`ログインに失敗しました（到達先: ${host}${pathname.split(";")[0]}、画面: ${$home("title").text().trim()}）。ログインIDとパスワード、またはメンテナンス状況を確認してください`,
+			`ログインに失敗しました（到達先: ${host}${pathWithoutSession(home.url)}、画面: ${$home("title").text().trim()}）。ログインIDとパスワード、またはメンテナンス状況を確認してください`,
 		);
 	}
 	return home;

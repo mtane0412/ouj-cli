@@ -3,7 +3,7 @@
  * Cookie の保持とリダイレクト追跡を、外部通信なしで検証する。
  */
 import { describe, expect, it } from "vitest";
-import { HttpClient } from "../src/http-client.js";
+import { HttpClient, pathWithoutSession } from "../src/http-client.js";
 
 describe("HttpClient", () => {
 	it("リダイレクト先へ Cookie を送り、POST は GET に変わる", async () => {
@@ -108,5 +108,15 @@ describe("HttpClient", () => {
 		);
 
 		await expect(client.get("https://example.test/")).rejects.toThrow("500");
+	});
+});
+
+describe("pathWithoutSession", () => {
+	it("パス内のセッション ID とクエリを取り除く", () => {
+		expect(
+			pathWithoutSession(
+				"https://example.test/portal/home;jsessionid=secret-session?ticket=secret-ticket",
+			),
+		).toBe("/portal/home");
 	});
 });

@@ -5,7 +5,7 @@
  * OUJ_TRACE を設定すると、値を除いた通信経路を標準エラーへ書く。
  * doctor は個人情報を出さず、接続と一覧表の形式だけを確認する。
  */
-import { HttpClient } from "./http-client.js";
+import { HttpClient, pathWithoutSession } from "./http-client.js";
 import { login, MENUS, type MenuName, openMenu, parseTable } from "./wakaba.js";
 
 const USAGE = "使い方: ouj <grades|contacts|files|doctor>";
@@ -36,7 +36,7 @@ async function doctor(
 				MENUS[name].tableSelector,
 			);
 			results[name] = {
-				path: new URL(page.url).pathname,
+				path: pathWithoutSession(page.url),
 				headers,
 				rowCount: rows.length,
 			};

@@ -8,6 +8,11 @@ import { CookieJar } from "tough-cookie";
 const MAX_REDIRECTS = 10;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
+/** 出力してよいパスを返す。URL に含まれるセッション ID とクエリを取り除く */
+export function pathWithoutSession(url: string): string {
+	return new URL(url).pathname.split(";")[0] ?? "";
+}
+
 /** 値を除いた URL の説明を作る（ホスト、パス、パス内パラメータ名、クエリ名） */
 function describeUrl(url: string): string {
 	const { host, pathname, searchParams } = new URL(url);
@@ -107,9 +112,7 @@ export class HttpClient {
 			}
 			if (!response.ok) {
 				// URL にはチケットやトークンが含まれるため、エラーにはパスだけを出す
-				throw new Error(
-					`HTTP ${response.status}: ${new URL(url).pathname.split(";")[0]}`,
-				);
+				throw new Error(`HTTP ${response.status}: ${pathWithoutSession(url)}`);
 			}
 			return { url, body: await response.text() };
 		}
