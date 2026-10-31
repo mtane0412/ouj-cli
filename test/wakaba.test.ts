@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { HttpClient } from "../src/http-client.js";
 import {
 	checkMenu,
+	fetchContact,
 	fetchSyllabus,
 	login,
 	MENUS,
@@ -249,7 +250,7 @@ describe("openMenu", () => {
 describe("checkMenu", () => {
 	const contactsPage = `<title>学内連絡</title><table id="tbl_commoncontact_rcv">
 	  <thead><tr><th>件名</th><th>発信者</th></tr></thead>
-	  <tbody><tr><td>休講のお知らせ</td><td>教務課</td></tr></tbody>
+	  <tbody><tr><td><a onclick="dtlScreen('6155', '0', 'initializeRcv', '1')">休講のお知らせ</a></td><td>教務課</td></tr></tbody>
 	</table>`;
 	const siteWithContacts = (posts: RecordedPost[]) =>
 		fakeSite(posts, undefined, contactsPage);
@@ -276,7 +277,7 @@ describe("checkMenu", () => {
 		expect(result).toMatchObject({
 			login: "ok",
 			menu: "contacts",
-			headers: ["件名", "発信者"],
+			headers: ["件名", "発信者", "連絡ID"],
 			rowCount: 1,
 		});
 		expect(JSON.stringify(result)).not.toContain("休講のお知らせ");
@@ -742,6 +743,222 @@ describe("fetchSyllabus", () => {
 				syllabusSite([], "<title>エラー画面</title>"),
 				credentials,
 				query,
+			),
+		).rejects.toMatchObject({ code: "SITE_CHANGED" });
+	});
+});
+
+describe("学内連絡", () => {
+	const listPage = `<title>学内連絡</title>
+	  <form name="commoncontact_commonContactActionForm"><input type="hidden" name="taglib.html.TOKEN" value="一覧トークン"></form>
+	  <table id="tbl_commoncontact_rcv"><thead><tr><th>カテゴリ</th><th>タイトル</th></tr></thead>
+	  <tbody>
+	    <tr><td>学生生活</td><td><a onclick="dtlScreen('6155', '0', 'initializeRcv', '1');return dbClick();">図書館の休館</a><span class="red">（未読）</span></td></tr>
+	    <tr><td>教務</td><td><a onclick="dtlScreen('6100', '1', 'initializeRcv', '2');return dbClick();">試験のお知らせ</a></td></tr>
+	  </tbody></table>`;
+	const detailPage = `<title>学内連絡詳細</title><div class="ttb_entry">
+	  <div class="row"><div class="col-lg-3 th">カテゴリ</div><div class="col-lg-9 td">学生生活</div></div>
+	  <div class="row"><div class="col-lg-3 th">タイトル</div><div class="col-lg-9 td">図書館の休館</div></div>
+	  <div class="row"><div class="col-lg-3 th">連絡内容</div><div class="col-lg-9 td brkall"><div class="rich_area">
+	    <p>在学生の皆さん</p><p>詳細は<a href="https://example.ouj.ac.jp/library">こちら</a>をご覧ください。<br/>以上</p>
+	  </div></div></div>
+	</div>`;
+
+	function contactSite(posts: RecordedPost[], detail = detailPage) {
+		return new HttpClient(async (input, init) => {
+			const url = String(input);
+			if (init?.method === "POST") {
+				posts.push({ url, body: new URLSearchParams(String(init.body)) });
+				if (url.endsWith("/login/preLogin/preLogin")) return new Response("{}");
+				if (url.endsWith("/portal/sso/")) {
+					return new Response(null, {
+						status: 302,
+						headers: { location: CAS_URL },
+					});
+				}
+				if (url.includes("/cas/login")) {
+					return new Response(null, {
+						status: 302,
+						headers: { location: HOME_URL },
+					});
+				}
+				if (url.includes("/dtlEdit")) return new Response(detail);
+				return new Response(listPage);
+			}
+			if (url === PORTAL_URL) return new Response(PORTAL_PAGE);
+			return new Response(url.includes("/cas/login") ? CAS_PAGE : HOME_PAGE);
+		});
+	}
+
+	it("一覧の各行に、本文の取得に使う連絡IDをつける", () => {
+		expect(MENUS.contacts.parse(listPage)).toEqual({
+			headers: ["カテゴリ", "タイトル", "連絡ID"],
+			rows: [
+				{
+					カテゴリ: "学生生活",
+					タイトル: "図書館の休館（未読）",
+					連絡ID: "6155",
+				},
+				{ カテゴリ: "教務", タイトル: "試験のお知らせ", 連絡ID: "6100" },
+			],
+		});
+	});
+
+	it("一覧に詳細へのリンクがない行があれば SITE_CHANGED で失敗する", () => {
+		const html = listPage.replace(/<a onclick="dtlScreen\('6100'[^>]*>/, "<a>");
+
+		expect(() => MENUS.contacts.parse(html)).toThrow(
+			expect.objectContaining({ code: "SITE_CHANGED" }),
+		);
+	});
+
+	it("指定の1件だけを開き、行の引数を画面と同じ形で送る", async () => {
+		const posts: RecordedPost[] = [];
+
+		const table = await fetchContact(contactSite(posts), credentials, "6100");
+
+		const detailPosts = posts.filter(({ url }) => url.includes("/dtlEdit"));
+		expect(detailPosts).toHaveLength(1);
+		expect(Object.fromEntries(detailPosts[0]?.body ?? [])).toEqual({
+			"taglib.html.TOKEN": "一覧トークン",
+			mode: "initializeRcv",
+			selectIndex: "1",
+			commonContactId: "6100",
+			commonContactKindDivision: "2",
+		});
+		expect(table.headers).toEqual(["項目", "内容"]);
+	});
+
+	it("本文は段落を改行で分け、リンク先を残す", async () => {
+		const table = await fetchContact(contactSite([]), credentials, "6155");
+
+		expect(table.rows).toEqual([
+			{ 項目: "カテゴリ", 内容: "学生生活" },
+			{ 項目: "タイトル", 内容: "図書館の休館" },
+			{
+				項目: "連絡内容",
+				内容: "在学生の皆さん\n詳細はこちら（https://example.ouj.ac.jp/library）をご覧ください。\n以上",
+			},
+		]);
+	});
+
+	it("表示文字列が URL そのもののリンクは URL を重ねない", async () => {
+		const detail = detailPage.replace(
+			"在学生の皆さん",
+			'<a href="https://example.ouj.ac.jp/">https://example.ouj.ac.jp/</a>',
+		);
+
+		const table = await fetchContact(
+			contactSite([], detail),
+			credentials,
+			"6155",
+		);
+
+		const body = JSON.stringify(table.rows[2]);
+		expect(body).toContain("https://example.ouj.ac.jp/\\n");
+		expect(body).not.toContain("（https://example.ouj.ac.jp/）");
+	});
+
+	it("詳細へのリンクの前に別のリンクがある行でも連絡IDを取り出す", () => {
+		const html = listPage.replace(
+			"<td>教務</td><td>",
+			'<td>教務</td><td><a href="#添付">添付</a>',
+		);
+
+		expect(MENUS.contacts.parse(html).rows[1]).toMatchObject({
+			連絡ID: "6100",
+		});
+	});
+
+	it("一覧の画面にフォームがなければ詳細を開かず SITE_CHANGED で失敗する", async () => {
+		const posts: RecordedPost[] = [];
+		const client = new HttpClient(async (input, init) => {
+			const url = String(input);
+			if (init?.method === "POST") {
+				posts.push({ url, body: new URLSearchParams(String(init.body)) });
+				if (url.endsWith("/login/preLogin/preLogin")) return new Response("{}");
+				if (url.endsWith("/portal/sso/")) {
+					return new Response(null, {
+						status: 302,
+						headers: { location: CAS_URL },
+					});
+				}
+				if (url.includes("/cas/login")) {
+					return new Response(null, {
+						status: 302,
+						headers: { location: HOME_URL },
+					});
+				}
+				return new Response(listPage.replace(/<form.*?<\/form>/s, ""));
+			}
+			if (url === PORTAL_URL) return new Response(PORTAL_PAGE);
+			return new Response(url.includes("/cas/login") ? CAS_PAGE : HOME_PAGE);
+		});
+
+		await expect(
+			fetchContact(client, credentials, "6155"),
+		).rejects.toMatchObject({ code: "SITE_CHANGED" });
+		expect(posts.some(({ url }) => url.includes("/dtlEdit"))).toBe(false);
+	});
+
+	it("解析に失敗したときは、既読になった可能性を伝える", async () => {
+		await expect(
+			fetchContact(
+				contactSite([], "<title>エラー画面</title>"),
+				credentials,
+				"6155",
+			),
+		).rejects.toThrow("既読");
+	});
+
+	it("本文の外部リンクでないものは URL を足さず、表の欄は区切る", async () => {
+		const detail = detailPage.replace(
+			"在学生の皆さん",
+			'<a href="javascript:void(0)">開く</a><table><tr><td>日付</td><td>場所</td></tr></table>',
+		);
+
+		const table = await fetchContact(
+			contactSite([], detail),
+			credentials,
+			"6155",
+		);
+
+		const body = JSON.stringify(table.rows[2]);
+		expect(body).not.toContain("javascript");
+		expect(body).toContain("日付 場所");
+	});
+
+	it("本文の中の入れ子の行を項目として取り込まない", async () => {
+		const detail = detailPage.replace(
+			"在学生の皆さん",
+			'<div class="row"><div class="th">偽の項目</div><div class="td">偽の値</div></div>',
+		);
+
+		const table = await fetchContact(
+			contactSite([], detail),
+			credentials,
+			"6155",
+		);
+
+		expect(JSON.stringify(table.rows)).not.toContain('"偽の項目"');
+		expect(table.rows).toHaveLength(3);
+	});
+
+	it("一覧にない連絡IDは詳細を開かず USAGE で失敗する", async () => {
+		const posts: RecordedPost[] = [];
+
+		await expect(
+			fetchContact(contactSite(posts), credentials, "9999"),
+		).rejects.toMatchObject({ code: "USAGE" });
+		expect(posts.some(({ url }) => url.includes("/dtlEdit"))).toBe(false);
+	});
+
+	it("詳細画面の形式が違えば SITE_CHANGED で失敗する", async () => {
+		await expect(
+			fetchContact(
+				contactSite([], "<title>エラー画面</title>"),
+				credentials,
+				"6155",
 			),
 		).rejects.toMatchObject({ code: "SITE_CHANGED" });
 	});

@@ -31,6 +31,7 @@ describe("run", () => {
 	let dependencies: Dependencies;
 	let fetchTable: ReturnType<typeof vi.fn<Dependencies["fetchTable"]>>;
 	let doctor: ReturnType<typeof vi.fn<Dependencies["doctor"]>>;
+	let fetchContact: ReturnType<typeof vi.fn<Dependencies["fetchContact"]>>;
 	let fetchSyllabus: ReturnType<typeof vi.fn<Dependencies["fetchSyllabus"]>>;
 
 	/** 標準エラーへ書かれた JSON のエラーを取り出す */
@@ -48,7 +49,12 @@ describe("run", () => {
 			headers: ["項目", "内容"],
 			rows: [{ 項目: "科目名", 内容: "心理学概論" }],
 		}));
+		fetchContact = vi.fn<Dependencies["fetchContact"]>(async () => ({
+			headers: ["項目", "内容"],
+			rows: [{ 項目: "タイトル", 内容: "図書館の休館" }],
+		}));
 		dependencies = {
+			fetchContact,
 			fetchSyllabus,
 			env: { OUJ_USERNAME: "学生A", OUJ_PASSWORD: "秘密の文字列" },
 			store: new LocalStore(dir, () => currentTime),
@@ -78,6 +84,7 @@ describe("run", () => {
 				"class-contacts",
 				"exam-timetable",
 				"syllabus",
+				"contact",
 				"doctor",
 				"cache-clear",
 			]) {
@@ -413,6 +420,41 @@ describe("run", () => {
 			expect(errorOutput().code).toBe("USAGE");
 			expect(fetchSyllabus).not.toHaveBeenCalled();
 			expect(fetchTable).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("contact", () => {
+		it("指定の1件を取得し、同じ連絡IDの再実行はキャッシュを使う", async () => {
+			expect(await run(["contact", "--id", "6155"], dependencies)).toBe(0);
+			expect(fetchContact).toHaveBeenCalledWith(
+				{ username: "学生A", password: "秘密の文字列" },
+				"6155",
+			);
+
+			stdout = [];
+			expect(await run(["contact", "--id", "6155"], dependencies)).toBe(0);
+			expect(output().source).toBe("cache");
+			expect(fetchContact).toHaveBeenCalledTimes(1);
+		});
+
+		it("--help は既読になることを示す", async () => {
+			await run(["contact", "--help"], dependencies);
+
+			expect(stdout.join("")).toContain("既読");
+		});
+
+		it.each([
+			["--id なし", ["contact"]],
+			["数字でない --id", ["contact", "--id", "../外"]],
+			["--year の指定", ["contact", "--id", "6155", "--year", "2026"]],
+			["--refresh の指定", ["contact", "--id", "6155", "--refresh"]],
+			["他の画面への --id", ["grades", "--id", "6155"]],
+			["syllabus への --id", ["syllabus", "--id", "6155"]],
+		])("%s は通信せず USAGE で失敗する", async (_label, argv) => {
+			expect(await run(argv, dependencies)).toBe(2);
+
+			expect(errorOutput().code).toBe("USAGE");
+			expect(fetchContact).not.toHaveBeenCalled();
 		});
 	});
 

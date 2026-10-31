@@ -13,6 +13,7 @@ import { run } from "./run.js";
 import {
 	type Credentials,
 	checkMenu,
+	fetchContact,
 	fetchSyllabus,
 	login,
 	MENUS,
@@ -49,6 +50,8 @@ process.exitCode = await run(process.argv.slice(2), {
 	env: process.env,
 	store: new LocalStore(join(cacheHome, "ouj")),
 	fetchTable,
+	fetchContact: (credentials, id) =>
+		fetchContact(createClient(), credentials, id),
 	fetchSyllabus: (credentials, query) =>
 		fetchSyllabus(createClient(), credentials, query),
 	doctor: (credentials, name) => checkMenu(createClient(), credentials, name),
