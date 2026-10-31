@@ -68,6 +68,7 @@ describe("run", () => {
 				"grades",
 				"contacts",
 				"files",
+				"schedule",
 				"doctor",
 				"cache-clear",
 			]) {

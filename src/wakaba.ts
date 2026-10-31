@@ -27,7 +27,8 @@ interface Menu {
 	nextPath: string;
 	/** 教務側のアプリへ移動する画面かどうか */
 	external: boolean;
-	tableSelector: string;
+	/** 画面の HTML を行データへ変換する */
+	parse: (html: string) => Table;
 }
 
 export const MENUS = {
@@ -36,21 +37,28 @@ export const MENUS = {
 		menuCode: "B0201",
 		nextPath: "/commoncontact/commonContact/initialize",
 		external: false,
-		tableSelector: "#tbl_commoncontact_rcv",
+		parse: (html) => parseTable(html, "#tbl_commoncontact_rcv"),
 	},
 	files: {
 		description: "授業共有ファイルの一覧を取得します",
 		menuCode: "A0204",
 		nextPath: "/classfile/classFile/initialize",
 		external: false,
-		tableSelector: "#tbl_classFile",
+		parse: (html) => parseTable(html, "#tbl_classFile"),
 	},
 	grades: {
 		description: "履修成績を取得します",
 		menuCode: "N0213",
 		nextPath: "/SC02080301003/initialize",
 		external: true,
-		tableSelector: "#searchResultList_SC02080301003",
+		parse: (html) => parseTable(html, "#searchResultList_SC02080301003"),
+	},
+	schedule: {
+		description: "今週のスケジュールのうち、9:00〜21:00の予定を取得します",
+		menuCode: "B0101",
+		nextPath: "/schedule/weeklySchedule/initialize",
+		external: false,
+		parse: parseWeeklySchedule,
 	},
 } as const satisfies Record<string, Menu>;
 
@@ -168,7 +176,7 @@ export async function checkMenu(
 ) {
 	const home = await login(client, credentials);
 	const page = await openMenu(client, home, name);
-	const { headers, rows } = parseTable(page.body, MENUS[name].tableSelector);
+	const { headers, rows } = MENUS[name].parse(page.body);
 	return {
 		login: "ok",
 		menu: name,
@@ -210,4 +218,85 @@ export function parseTable(html: string, selector: string): Table {
 			);
 		});
 	return { headers: headers.filter(Boolean), rows };
+}
+
+const SCHEDULE_HEADERS = ["日付", "時間", "内容"];
+const DAYS_PER_WEEK = 7;
+const EVENT_TIME = /^\d{2}:\d{2}-\d{2}:\d{2}$/;
+
+/**
+ * 週間カレンダーの1欄を予定ごとの時間と内容に分ける。
+ * 欄の中は br で区切られ、時刻の行が予定の始まりになる。時刻のない予定は行の見出しを時間にする。
+ */
+function parseScheduleCell(
+	$: cheerio.CheerioAPI,
+	content: ReturnType<cheerio.CheerioAPI>,
+	rowLabel: string,
+): { time: string; lines: string[] }[] {
+	const lines = (content.html() ?? "")
+		.split(/<br\b[^>]*>/i)
+		.map((line) => $(`<div>${line}</div>`).text().replace(/\s+/g, " ").trim())
+		.filter(Boolean);
+	const events: { time: string; lines: string[] }[] = [];
+	for (const line of lines) {
+		const current = events.at(-1);
+		if (EVENT_TIME.test(line)) events.push({ time: line, lines: [] });
+		else if (current) current.lines.push(line);
+		else events.push({ time: rowLabel, lines: [line] });
+	}
+	return events;
+}
+
+/**
+ * 週間スケジュールのカレンダーを、日付、時間、内容の行データへ変換する。
+ * 複数の時間帯にまたがる予定は各行に現れるため1件にまとめ、日付順に並べる。
+ */
+export function parseWeeklySchedule(html: string): Table {
+	const $ = cheerio.load(html);
+	const table = $("table.calendar-body");
+	const dates = table
+		.find("thead th")
+		.toArray()
+		.slice(1)
+		.map((th) => $(th).text().trim());
+	if (dates.length !== DAYS_PER_WEEK) {
+		throw new OujError(
+			"SITE_CHANGED",
+			`週間カレンダーの形式が想定と異なります（画面: ${$("title").text().trim()}、日付の列: ${dates.length}）`,
+		);
+	}
+	const rowsByDay: Map<string, Record<string, string>>[] = dates.map(
+		() => new Map(),
+	);
+	for (const row of table.find("tbody tr").toArray()) {
+		const rowLabel = $(row).find("th").first().text().replace("|", "").trim();
+		const cells = $(row).find("td").toArray();
+		if (cells.length !== DAYS_PER_WEEK) {
+			throw new OujError(
+				"SITE_CHANGED",
+				`週間カレンダーの欄の数が日付と一致しません（${cells.length}）`,
+			);
+		}
+		cells.forEach((cell, dayIndex) => {
+			const content = $(cell).find(".div_content");
+			if (!content.length) {
+				throw new OujError(
+					"SITE_CHANGED",
+					"週間カレンダーの欄に予定の入れ物が見つかりません",
+				);
+			}
+			for (const { time, lines } of parseScheduleCell($, content, rowLabel)) {
+				const description = lines.join(" ");
+				rowsByDay[dayIndex]?.set(`${time} ${description}`, {
+					日付: dates[dayIndex] ?? "",
+					時間: time,
+					内容: description,
+				});
+			}
+		});
+	}
+	return {
+		headers: SCHEDULE_HEADERS,
+		rows: rowsByDay.flatMap((events) => [...events.values()]),
+	};
 }

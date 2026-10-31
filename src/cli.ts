@@ -17,7 +17,6 @@ import {
 	MENUS,
 	type MenuName,
 	openMenu,
-	parseTable,
 } from "./wakaba.js";
 
 function createClient(): HttpClient {
@@ -31,7 +30,7 @@ async function fetchTable(credentials: Credentials, name: MenuName) {
 	const client = createClient();
 	const home = await login(client, credentials);
 	const page = await openMenu(client, home, name);
-	return parseTable(page.body, MENUS[name].tableSelector);
+	return MENUS[name].parse(page.body);
 }
 
 const cacheHome = process.env.XDG_CACHE_HOME || join(homedir(), ".cache");

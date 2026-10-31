@@ -4,7 +4,13 @@
  */
 import { describe, expect, it } from "vitest";
 import { HttpClient } from "../src/http-client.js";
-import { checkMenu, login, openMenu, parseTable } from "../src/wakaba.js";
+import {
+	checkMenu,
+	login,
+	openMenu,
+	parseTable,
+	parseWeeklySchedule,
+} from "../src/wakaba.js";
 
 const PORTAL_URL = "https://www.wakaba.ouj.ac.jp/portal/";
 // 新規セッションのログインフォームにはトークンがない（実サイトで確認済み）
@@ -318,6 +324,113 @@ describe("parseTable", () => {
 				code: "SITE_CHANGED",
 				message: expect.stringContaining("列数"),
 			}),
+		);
+	});
+});
+
+describe("parseWeeklySchedule", () => {
+	/** 実サイトのカレンダーの形を再現した予定の欄 */
+	const cell = (content: string) =>
+		`<td><div class="div_add"><a class="btn">＋</a></div><div class="div_content">${content}</div></td>`;
+	const emptyCells = (count: number) => cell("").repeat(count);
+	const dates = [
+		"10/26(月)",
+		"10/27(火)",
+		"10/28(水)",
+		"10/29(木)",
+		"10/30(金)",
+		"10/31(土)",
+		"11/1(日)",
+	];
+	const calendar = (rows: string) => `<table class="calendar-body table">
+	  <thead><tr><th></th>${dates.map((date) => `<th>${date}</th>`).join("")}</tr></thead>
+	  <tbody>${rows}</tbody>
+	</table>`;
+	const broadcast =
+		"15:45-16:30<br /><a>データの分析と知識発見（’２４）</a><br/>放送授業<br />テレビ<br />通常放送<br/>";
+
+	it("予定を日付、時間、内容の行にする", () => {
+		const html = calendar(
+			`<tr><th>15:00|</th>${emptyCells(5)}${cell(broadcast)}${emptyCells(1)}</tr>`,
+		);
+
+		expect(parseWeeklySchedule(html)).toEqual({
+			headers: ["日付", "時間", "内容"],
+			rows: [
+				{
+					日付: "10/31(土)",
+					時間: "15:45-16:30",
+					内容: "データの分析と知識発見（’２４） 放送授業 テレビ 通常放送",
+				},
+			],
+		});
+	});
+
+	it("複数の時間帯にまたがる予定は1件にまとめる", () => {
+		const html = calendar(
+			`<tr><th>15:00|</th>${emptyCells(5)}${cell(broadcast)}${emptyCells(1)}</tr>
+			 <tr><th>16:00|</th>${emptyCells(5)}${cell(broadcast)}${emptyCells(1)}</tr>`,
+		);
+
+		expect(parseWeeklySchedule(html).rows).toHaveLength(1);
+	});
+
+	it("1つの欄に複数の予定があれば分けて、日付順に並べる", () => {
+		const html = calendar(
+			`<tr><th>10:00|</th>${emptyCells(1)}${cell("10:00-10:45<br/>心理学概論<br/>11:00-11:45<br/>統計学入門")}${emptyCells(5)}</tr>
+			 <tr><th>12:00|</th>${cell("12:00-12:45<br/>日本史")}${emptyCells(6)}</tr>`,
+		);
+
+		expect(parseWeeklySchedule(html).rows).toEqual([
+			{ 日付: "10/26(月)", 時間: "12:00-12:45", 内容: "日本史" },
+			{ 日付: "10/27(火)", 時間: "10:00-10:45", 内容: "心理学概論" },
+			{ 日付: "10/27(火)", 時間: "11:00-11:45", 内容: "統計学入門" },
+		]);
+	});
+
+	it("属性のついた br でも行を分ける", () => {
+		const html = calendar(
+			`<tr><th>10:00|</th>${cell('10:00-10:45<br class="改行"/>心理学概論')}${emptyCells(6)}</tr>`,
+		);
+
+		expect(parseWeeklySchedule(html).rows).toEqual([
+			{ 日付: "10/26(月)", 時間: "10:00-10:45", 内容: "心理学概論" },
+		]);
+	});
+
+	it("時刻のない行事は、行の見出しを時間にする", () => {
+		const html = calendar(
+			`<tr><th>行事</th>${cell("開講式")}${emptyCells(6)}</tr>`,
+		);
+
+		expect(parseWeeklySchedule(html).rows).toEqual([
+			{ 日付: "10/26(月)", 時間: "行事", 内容: "開講式" },
+		]);
+	});
+
+	it("予定がない週は0件を返す", () => {
+		const html = calendar(`<tr><th>09:00|</th>${emptyCells(7)}</tr>`);
+
+		expect(parseWeeklySchedule(html).rows).toEqual([]);
+	});
+
+	it.each([
+		["カレンダーがない画面", "<title>エラー画面</title>"],
+		[
+			"日付の見出しが7日分でない表",
+			'<table class="calendar-body table"><thead><tr><th></th><th>10/26(月)</th></tr></thead></table>',
+		],
+		[
+			"予定の入れ物がない欄",
+			calendar(`<tr><th>09:00|</th>${"<td></td>".repeat(7)}</tr>`),
+		],
+		[
+			"欄の数が日付と合わない行",
+			calendar(`<tr><th>09:00|</th>${emptyCells(3)}</tr>`),
+		],
+	])("%s は SITE_CHANGED で失敗する", (_label, html) => {
+		expect(() => parseWeeklySchedule(html)).toThrow(
+			expect.objectContaining({ code: "SITE_CHANGED" }),
 		);
 	});
 });
