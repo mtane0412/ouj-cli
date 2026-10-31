@@ -725,6 +725,17 @@ describe("fetchSyllabus", () => {
 		).rejects.toMatchObject({ code: "USAGE" });
 	});
 
+	it("科目コードの列がなければ SITE_CHANGED で失敗する", async () => {
+		const html = resultPage(resultRow(0, "1234567", "心理学概論")).replace(
+			"<th>科目コード</th>",
+			"<th>番号</th>",
+		);
+
+		await expect(
+			fetchSyllabus(syllabusSite([], html), credentials, query),
+		).rejects.toMatchObject({ code: "SITE_CHANGED" });
+	});
+
 	it("結果の表も該当なしの案内もなければ SITE_CHANGED で失敗する", async () => {
 		await expect(
 			fetchSyllabus(

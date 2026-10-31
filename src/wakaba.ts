@@ -490,6 +490,12 @@ function syllabusCandidates($: cheerio.CheerioAPI): SyllabusCandidate[] {
 			.find("thead th")
 			.toArray()
 			.findIndex((th) => $(th).text().trim() === "科目コード");
+		if (codeColumn < 0) {
+			throw new OujError(
+				"SITE_CHANGED",
+				"シラバスの検索結果に科目コードの列が見つかりません",
+			);
+		}
 		$(table)
 			.find("tbody tr")
 			.each((_, row) => {
