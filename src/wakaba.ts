@@ -3,6 +3,7 @@
  * 読み取り専用のメニューだけを定義し、申請や投稿などの送信操作は扱わない。
  */
 import * as cheerio from "cheerio";
+import { OujError } from "./errors.js";
 import {
 	type HttpClient,
 	type Page,
@@ -20,6 +21,8 @@ export interface Credentials {
 }
 
 interface Menu {
+	/** --help で示す説明 */
+	description: string;
 	menuCode: string;
 	nextPath: string;
 	/** 教務側のアプリへ移動する画面かどうか */
@@ -30,18 +33,21 @@ interface Menu {
 /** 教務側の画面にはメニューフォームがなく次の画面へ進めないため、続けて開く doctor のために最後に置く */
 export const MENUS = {
 	contacts: {
+		description: "学内連絡の一覧を取得します",
 		menuCode: "B0201",
 		nextPath: "/commoncontact/commonContact/initialize",
 		external: false,
 		tableSelector: "#tbl_commoncontact_rcv",
 	},
 	files: {
+		description: "授業共有ファイルの一覧を取得します",
 		menuCode: "A0204",
 		nextPath: "/classfile/classFile/initialize",
 		external: false,
 		tableSelector: "#tbl_classFile",
 	},
 	grades: {
+		description: "履修成績を取得します",
 		menuCode: "N0213",
 		nextPath: "/SC02080301003/initialize",
 		external: true,
@@ -77,7 +83,10 @@ async function startCasLogin(client: HttpClient): Promise<Page> {
 	const portal = await client.get(`${PORTAL_ORIGIN}/portal/`);
 	const hidden = hiddenFields(cheerio.load(portal.body), LOGIN_FORM_SELECTOR);
 	if (hidden.mistakeChecker === undefined) {
-		throw new Error("ポータルにログインフォームが見つかりません");
+		throw new OujError(
+			"SITE_CHANGED",
+			"ポータルにログインフォームが見つかりません",
+		);
 	}
 	await client.post(`${PORTAL_ORIGIN}/portal/login/preLogin/preLogin`, {
 		mistakeChecker: hidden.mistakeChecker,
@@ -100,14 +109,16 @@ export async function login(
 	const $ = cheerio.load(casPage.body);
 	const hidden = hiddenFields($, 'form:has(input[name="execution"])');
 	if (!hidden.execution) {
-		throw new Error(
+		throw new OujError(
+			"SITE_CHANGED",
 			"認証画面の形式が想定と異なります（execution が見つかりません）",
 		);
 	}
 
 	// 認証情報を渡す前に、リダイレクト先が正規の CAS であることを確かめる
 	if (new URL(casPage.url).origin !== CAS_ORIGIN) {
-		throw new Error(
+		throw new OujError(
+			"SITE_CHANGED",
 			`認証画面の接続先が想定と異なります（${new URL(casPage.url).origin}）`,
 		);
 	}
@@ -116,7 +127,8 @@ export async function login(
 	if (!$home(MENU_FORM_SELECTOR).length) {
 		// URL にはチケットやセッション ID が含まれる場合があるため、取り除いて出す
 		const { host } = new URL(home.url);
-		throw new Error(
+		throw new OujError(
+			"AUTH",
 			`ログインに失敗しました（到達先: ${host}${pathWithoutSession(home.url)}、画面: ${$home("title").text().trim()}）。ログインIDとパスワード、またはメンテナンス状況を確認してください`,
 		);
 	}
@@ -135,7 +147,7 @@ export async function openMenu(
 		MENU_FORM_SELECTOR,
 	);
 	if (!hidden["taglib.html.TOKEN"]) {
-		throw new Error("メニューのフォームが見つかりません");
+		throw new OujError("SITE_CHANGED", "メニューのフォームが見つかりません");
 	}
 	const purpose = menu.external ? "externalPurpose" : "generalPurpose";
 	return client.post(`${PORTAL_ORIGIN}/portal/common/${purpose}/`, {
@@ -151,7 +163,8 @@ export function parseTable(html: string, selector: string): Table {
 	const $ = cheerio.load(html);
 	const table = $(selector);
 	if (!table.length) {
-		throw new Error(
+		throw new OujError(
+			"SITE_CHANGED",
 			`一覧表 ${selector} が見つかりません（画面: ${$("title").text().trim()}）`,
 		);
 	}
@@ -164,7 +177,8 @@ export function parseTable(html: string, selector: string): Table {
 		.map((row) => {
 			const cells = $(row).find("td").toArray().map(text);
 			if (cells.length !== headers.length) {
-				throw new Error(
+				throw new OujError(
+					"SITE_CHANGED",
 					`一覧表 ${selector} の列数が見出しと一致しません（見出し ${headers.length}、行 ${cells.length}）`,
 				);
 			}

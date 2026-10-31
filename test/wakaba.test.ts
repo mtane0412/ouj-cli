@@ -106,9 +106,10 @@ describe("login", () => {
 	it("ポータルにログインフォームがない場合はエラーにする", async () => {
 		const client = new HttpClient(async () => new Response("メンテナンス中"));
 
-		await expect(login(client, credentials)).rejects.toThrow(
-			"ログインフォーム",
-		);
+		await expect(login(client, credentials)).rejects.toMatchObject({
+			code: "SITE_CHANGED",
+			message: expect.stringContaining("ログインフォーム"),
+		});
 	});
 
 	it.each([
@@ -151,6 +152,12 @@ describe("login", () => {
 		const client = fakeSite([], () => new Response(CAS_PAGE));
 
 		await expect(login(client, credentials)).rejects.toThrow("ログインに失敗");
+		await expect(
+			login(
+				fakeSite([], () => new Response(CAS_PAGE)),
+				credentials,
+			),
+		).rejects.toMatchObject({ code: "AUTH" });
 	});
 
 	it("失敗時のエラーに到達先と画面タイトルを含め、チケットは含めない", async () => {
@@ -261,6 +268,11 @@ describe("parseTable", () => {
 		const html = `<table id="一覧"><thead><tr><th>科目名</th><th>評語</th></tr></thead>
       <tbody><tr><td>心理学入門</td></tr></tbody></table>`;
 
-		expect(() => parseTable(html, "#一覧")).toThrow("列数");
+		expect(() => parseTable(html, "#一覧")).toThrow(
+			expect.objectContaining({
+				code: "SITE_CHANGED",
+				message: expect.stringContaining("列数"),
+			}),
+		);
 	});
 });

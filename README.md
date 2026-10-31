@@ -21,16 +21,41 @@ export OUJ_USERNAME="ログインID"
 export OUJ_PASSWORD="$(op item get 項目名 --vault 保管庫名 --fields password --reveal)"
 ```
 
-実行するたびにログインするため、次のうち必要なコマンドを1つだけ実行してください。
+次のうち必要なコマンドを1つだけ実行してください。
 
 ```bash
-node dist/cli.js doctor    # 接続と表の形式だけを確認（個人情報は出力しない）
-node dist/cli.js grades    # 履修成績
-node dist/cli.js contacts  # 学内連絡の一覧
-node dist/cli.js files     # 授業共有ファイルの一覧
+node dist/cli.js grades       # 履修成績
+node dist/cli.js contacts     # 学内連絡の一覧
+node dist/cli.js files        # 授業共有ファイルの一覧
+node dist/cli.js doctor       # 接続と表の形式だけを確認（個人情報は出力しない）
+node dist/cli.js --help       # コマンド、出力形式、終了コードを表示（通信しない）
+node dist/cli.js cache-clear  # 保存した一覧を消す（通信しない）
 ```
 
-結果はJSONで標準出力へ書き出します。セッションの保存とログアウトは行いません。
+一覧のコマンドには次のオプションを指定できます。
+
+```bash
+node dist/cli.js contacts --limit 5
+node dist/cli.js grades --fields 科目名,評語  # 列名は結果の fields で確認できます
+node dist/cli.js grades --refresh             # キャッシュを使わず取得します
+```
+
+結果は `{ source, fetchedAt, fields, total, rows }` のJSONで標準出力へ書き出します。失敗時は `{ error: { code, message, hint } }` のJSONを標準エラーへ書き出し、種類ごとの終了コードを返します。
+
+## 保存するデータ
+
+サーバーへのログイン回数を減らすため、次のファイルを `$XDG_CACHE_HOME/ouj`（未設定の場合は `~/.cache/ouj`）に保存します。ファイルは暗号化しませんが、所有者だけが読める権限で作成します。
+
+| ファイル     | 内容                                         | 用途                                                                                |
+| ------------ | -------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `data/`      | 取得した一覧（成績などの個人情報を含みます） | 1時間以内の同じ一覧の取得では通信しません。期限切れの一覧は次回の実行時に削除します |
+| `last-login` | 最後にログインを始めた時刻                   | 60秒以内の再ログインを通信前に拒否します                                            |
+
+パスワードとセッションは保存しません。期限切れの一覧は `ouj` を実行するまで残ります。共有のコンピュータでは、使用後に `cache-clear` を実行してください。ログアウトは行いません。
+
+## エージェントからの利用
+
+[skills/ouj/SKILL.md](skills/ouj/SKILL.md) に、エージェント向けの手順と守るべき制限を記載しています。
 
 ## ライセンス
 
