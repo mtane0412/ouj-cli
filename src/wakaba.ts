@@ -853,7 +853,7 @@ export async function fetchFileDetail(
 	// 一括ダウンロードの操作は取得結果に含めない
 	$detail('[id^="fileListAllDownload"]').remove();
 	const rows = parseEntryRows($detail);
-	if (!rows.some((row) => Object.values(row)[0] === "ファイル")) {
+	if (!rows.some((row) => Object.values(row)[0] === "タイトル")) {
 		throw new OujError(
 			"SITE_CHANGED",
 			`授業共有ファイルの詳細の形式が想定と異なります（画面: ${$detail("title").text().trim()}）`,

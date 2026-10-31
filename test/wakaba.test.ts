@@ -1035,6 +1035,17 @@ describe("授業共有ファイル", () => {
 		]);
 	});
 
+	it("添付のない詳細画面も正常に読む", async () => {
+		const detail = detailPage.replace(
+			/<div class="row"><div class="th">ファイル.*?<\/div><\/div>\s*<div class="row"><div class="th">公開期間/s,
+			'<div class="row"><div class="th">公開期間',
+		);
+
+		const table = await fetchFileDetail(fileSite([], detail), credentials, "0");
+
+		expect(table.rows).toHaveLength(2);
+	});
+
 	it("ファイル本体へは通信しない", async () => {
 		const posts: RecordedPost[] = [];
 

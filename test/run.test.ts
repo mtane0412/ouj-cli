@@ -486,11 +486,13 @@ describe("run", () => {
 			await run(["file", "--help"], dependencies);
 
 			expect(stdout.join("")).toContain("ファイル本体は取得しません");
+			expect(stdout.join("")).toContain("一覧の順");
 		});
 
 		it.each([
 			["--id なし", ["file"]],
 			["数字でない --id", ["file", "--id", "../外"]],
+			["0で始まる --id", ["file", "--id", "00"]],
 			["--year の指定", ["file", "--id", "0", "--year", "2026"]],
 		])("%s は通信せず USAGE で失敗する", async (_label, argv) => {
 			expect(await run(argv, dependencies)).toBe(2);
