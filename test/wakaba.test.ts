@@ -854,9 +854,94 @@ describe("学内連絡", () => {
 			"6155",
 		);
 
-		expect(table.rows[2]?.内容?.split("\n")[0]).toBe(
-			"https://example.ouj.ac.jp/",
+		const body = JSON.stringify(table.rows[2]);
+		expect(body).toContain("https://example.ouj.ac.jp/\\n");
+		expect(body).not.toContain("（https://example.ouj.ac.jp/）");
+	});
+
+	it("詳細へのリンクの前に別のリンクがある行でも連絡IDを取り出す", () => {
+		const html = listPage.replace(
+			"<td>教務</td><td>",
+			'<td>教務</td><td><a href="#添付">添付</a>',
 		);
+
+		expect(MENUS.contacts.parse(html).rows[1]).toMatchObject({
+			連絡ID: "6100",
+		});
+	});
+
+	it("一覧の画面にフォームがなければ詳細を開かず SITE_CHANGED で失敗する", async () => {
+		const posts: RecordedPost[] = [];
+		const client = new HttpClient(async (input, init) => {
+			const url = String(input);
+			if (init?.method === "POST") {
+				posts.push({ url, body: new URLSearchParams(String(init.body)) });
+				if (url.endsWith("/login/preLogin/preLogin")) return new Response("{}");
+				if (url.endsWith("/portal/sso/")) {
+					return new Response(null, {
+						status: 302,
+						headers: { location: CAS_URL },
+					});
+				}
+				if (url.includes("/cas/login")) {
+					return new Response(null, {
+						status: 302,
+						headers: { location: HOME_URL },
+					});
+				}
+				return new Response(listPage.replace(/<form.*?<\/form>/s, ""));
+			}
+			if (url === PORTAL_URL) return new Response(PORTAL_PAGE);
+			return new Response(url.includes("/cas/login") ? CAS_PAGE : HOME_PAGE);
+		});
+
+		await expect(
+			fetchContact(client, credentials, "6155"),
+		).rejects.toMatchObject({ code: "SITE_CHANGED" });
+		expect(posts.some(({ url }) => url.includes("/dtlEdit"))).toBe(false);
+	});
+
+	it("解析に失敗したときは、既読になった可能性を伝える", async () => {
+		await expect(
+			fetchContact(
+				contactSite([], "<title>エラー画面</title>"),
+				credentials,
+				"6155",
+			),
+		).rejects.toThrow("既読");
+	});
+
+	it("本文の外部リンクでないものは URL を足さず、表の欄は区切る", async () => {
+		const detail = detailPage.replace(
+			"在学生の皆さん",
+			'<a href="javascript:void(0)">開く</a><table><tr><td>日付</td><td>場所</td></tr></table>',
+		);
+
+		const table = await fetchContact(
+			contactSite([], detail),
+			credentials,
+			"6155",
+		);
+
+		const body = JSON.stringify(table.rows[2]);
+		expect(body).not.toContain("javascript");
+		expect(body).toContain("日付 場所");
+	});
+
+	it("本文の中の入れ子の行を項目として取り込まない", async () => {
+		const detail = detailPage.replace(
+			"在学生の皆さん",
+			'<div class="row"><div class="th">偽の項目</div><div class="td">偽の値</div></div>',
+		);
+
+		const table = await fetchContact(
+			contactSite([], detail),
+			credentials,
+			"6155",
+		);
+
+		expect(JSON.stringify(table.rows)).not.toContain('"偽の項目"');
+		expect(table.rows).toHaveLength(3);
 	});
 
 	it("一覧にない連絡IDは詳細を開かず USAGE で失敗する", async () => {

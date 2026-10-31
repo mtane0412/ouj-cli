@@ -421,9 +421,13 @@ async function runContact(
 	values: ReturnType<typeof parseCommandLine>["values"],
 	dependencies: Dependencies,
 ): Promise<unknown> {
-	const { id, year, term, type, name, code } = values;
+	const { id, year, term, type, name, code, refresh } = values;
 	if ([year, term, type, name, code].some((value) => value !== undefined)) {
 		throw new OujError("USAGE", "contact に指定できる検索条件は --id だけです");
+	}
+	// 開いた連絡は一覧から消えるため、取得し直そうとしても必ず失敗する
+	if (refresh !== undefined) {
+		throw new OujError("USAGE", "contact には --refresh を指定できません");
 	}
 	if (id === undefined || !/^\d+$/.test(id)) {
 		throw new OujError("USAGE", "--id には数字の連絡IDを指定してください");

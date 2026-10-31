@@ -447,6 +447,7 @@ describe("run", () => {
 			["--id なし", ["contact"]],
 			["数字でない --id", ["contact", "--id", "../外"]],
 			["--year の指定", ["contact", "--id", "6155", "--year", "2026"]],
+			["--refresh の指定", ["contact", "--id", "6155", "--refresh"]],
 			["他の画面への --id", ["grades", "--id", "6155"]],
 			["syllabus への --id", ["syllabus", "--id", "6155"]],
 		])("%s は通信せず USAGE で失敗する", async (_label, argv) => {

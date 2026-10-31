@@ -657,6 +657,8 @@ const CONTACT_ID_HEADER = "連絡ID";
 /** 一覧のリンクが詳細画面へ渡す引数（連絡ID、行番号、画面の種類、連絡の区分） */
 const CONTACT_LINK = /dtlScreen\('(\d+)',\s*'(\d+)',\s*'(\w+)',\s*'(\d+)'\)/;
 
+const EXTERNAL_LINK = /^(https?:|mailto:)/i;
+
 /** 学内連絡の一覧を変換し、本文の取得に使う連絡IDを各行に加える */
 function parseContactList(html: string): Table {
 	const { headers, rows } = parseTable(html, CONTACT_LIST_SELECTOR);
@@ -664,7 +666,10 @@ function parseContactList(html: string): Table {
 	const ids = $(`${CONTACT_LIST_SELECTOR} tbody tr`)
 		.toArray()
 		.map(
-			(row) => CONTACT_LINK.exec($(row).find("a").attr("onclick") ?? "")?.[1],
+			(row) =>
+				CONTACT_LINK.exec(
+					$(row).find('a[onclick*="dtlScreen"]').attr("onclick") ?? "",
+				)?.[1],
 		);
 	return {
 		headers: [...headers, CONTACT_ID_HEADER],
@@ -688,9 +693,13 @@ function richText(
 ) {
 	const copy = element.clone();
 	copy.find("a[href]").each((_, link) => {
-		const href = $(link).attr("href");
-		if ($(link).text().trim() !== href) $(link).append(`（${href}）`);
+		const href = $(link).attr("href") ?? "";
+		// 外部へのリンクだけを残す。javascript: などは読み手の役に立たない
+		if (EXTERNAL_LINK.test(href) && $(link).text().trim() !== href) {
+			$(link).append(`（${href}）`);
+		}
 	});
+	copy.find("td, th").append(" ");
 	copy.find("br").replaceWith("\n");
 	copy.find("p, li, div, tr").append("\n");
 	return copy
@@ -704,7 +713,7 @@ function richText(
 /** 学内連絡の詳細画面を、項目と内容の行データへ変換する */
 function parseContactDetail(html: string): Table {
 	const $ = cheerio.load(html);
-	const rows = $(".ttb_entry .row")
+	const rows = $(".ttb_entry > .row")
 		.toArray()
 		.flatMap((row) => {
 			const label = $(row).children(".th").text().replace(/\s+/g, " ").trim();
@@ -712,10 +721,10 @@ function parseContactDetail(html: string): Table {
 			if (!label || !value.length) return [];
 			return [{ 項目: label, 内容: richText($, value) }];
 		});
-	if (!rows.some((row) => row.項目 === "連絡内容")) {
+	if (!rows.some((row) => Object.values(row)[0] === "連絡内容")) {
 		throw new OujError(
 			"SITE_CHANGED",
-			`学内連絡の詳細の形式が想定と異なります（画面: ${$("title").text().trim()}）`,
+			`学内連絡の詳細の形式が想定と異なります（画面: ${$("title").text().trim()}）。この連絡は既読になった可能性があります`,
 		);
 	}
 	return { headers: ["項目", "内容"], rows };
@@ -733,7 +742,14 @@ export async function fetchContact(
 	const home = await login(client, credentials);
 	const list = await openMenu(client, home, "contacts");
 	const $ = cheerio.load(list.body);
-	const link = $(`${CONTACT_LIST_SELECTOR} a[onclick]`)
+	const form = $(CONTACT_FORM_SELECTOR);
+	if (!form.length) {
+		throw new OujError(
+			"SITE_CHANGED",
+			`学内連絡の詳細を開くフォームが見つかりません（画面: ${$("title").text().trim()}）`,
+		);
+	}
+	const link = $(`${CONTACT_LIST_SELECTOR} a[onclick*="dtlScreen"]`)
 		.toArray()
 		.map((element) => CONTACT_LINK.exec($(element).attr("onclick") ?? ""))
 		.find((match) => match?.[1] === id);
@@ -748,7 +764,7 @@ export async function fetchContact(
 	const detail = await client.post(
 		`${PORTAL_ORIGIN}/portal/commoncontact/commonContact/dtlEdit`,
 		{
-			...formFields($, $(CONTACT_FORM_SELECTOR)),
+			...formFields($, form),
 			mode: mode ?? "",
 			selectIndex: selectIndex ?? "",
 			commonContactId: commonContactId ?? "",
