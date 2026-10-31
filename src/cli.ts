@@ -17,6 +17,8 @@ import {
 	MENUS,
 	type MenuName,
 	openMenu,
+	type SearchQuery,
+	searchMenu,
 } from "./wakaba.js";
 
 function createClient(): HttpClient {
@@ -26,10 +28,17 @@ function createClient(): HttpClient {
 	);
 }
 
-async function fetchTable(credentials: Credentials, name: MenuName) {
+async function fetchTable(
+	credentials: Credentials,
+	name: MenuName,
+	query: SearchQuery | undefined,
+) {
 	const client = createClient();
 	const home = await login(client, credentials);
-	const page = await openMenu(client, home, name);
+	const menuPage = await openMenu(client, home, name);
+	const page = query
+		? await searchMenu(client, menuPage, name, query)
+		: menuPage;
 	return MENUS[name].parse(page.body);
 }
 

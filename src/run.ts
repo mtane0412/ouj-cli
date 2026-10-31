@@ -7,7 +7,14 @@ import { parseArgs } from "node:util";
 import { describeFailure, EXIT_CODES, OujError } from "./errors.js";
 import type { CachedTable, LocalStore, StoredTable } from "./local-store.js";
 import { CACHE_TTL_MS, LOGIN_INTERVAL_MS } from "./local-store.js";
-import { type Credentials, MENUS, type MenuName } from "./wakaba.js";
+import {
+	type Credentials,
+	LECTURE_CLASSES,
+	MENUS,
+	type MenuName,
+	menuSearch,
+	type SearchQuery,
+} from "./wakaba.js";
 
 const MS_PER_SECOND = 1000;
 const MS_PER_MINUTE = 60 * MS_PER_SECOND;
@@ -19,6 +26,7 @@ export interface Dependencies {
 	fetchTable: (
 		credentials: Credentials,
 		name: MenuName,
+		query: SearchQuery | undefined,
 	) => Promise<StoredTable>;
 	/** ログインして指定の1画面の接続と表の形式を確認する */
 	doctor: (credentials: Credentials, name: MenuName) => Promise<unknown>;
@@ -29,6 +37,13 @@ export interface Dependencies {
 /** doctor が対象を省略されたときに開く代表の画面。ポータル内の画面のため教務側のアプリに触れない */
 const DEFAULT_DOCTOR_MENU: MenuName = "contacts";
 
+/** doctor が確認できる画面。検索が必須の画面は開いただけでは表がないため除く */
+function doctorMenus(): MenuName[] {
+	return (Object.keys(MENUS) as MenuName[]).filter(
+		(name) => !menuSearch(name)?.required,
+	);
+}
+
 const TABLE_ACCESS =
 	"有効なキャッシュがあれば通信しません。なければログインします。";
 const TABLE_OPTIONS = `オプション:
@@ -36,6 +51,19 @@ const TABLE_OPTIONS = `オプション:
   --limit <件数>       出力する行数の上限を1以上の整数で指定します
   --refresh            キャッシュを使わず取得します。必要なときだけ使ってください
 `;
+
+const SEARCH_OPTIONS = `  --year <年度>        開講年度を20で始まる4桁で指定します
+  --term <1|2>         開講学期を指定します。--year と一緒に指定します
+`;
+const TYPE_OPTION = `  --type <${Object.keys(LECTURE_CLASSES).join("|")}>  授業区分を指定します
+`;
+
+/** 画面ごとに使えるオプションの説明を返す */
+function tableOptionsHelp(name: MenuName): string {
+	const search = menuSearch(name);
+	if (!search) return TABLE_OPTIONS;
+	return `${TABLE_OPTIONS}${SEARCH_OPTIONS}${search.lectureClassField ? TYPE_OPTION : ""}`;
+}
 
 /** MENUS から導いたコマンドの一覧。ヘルプの内容はここだけで管理する */
 const COMMANDS: Record<string, { description: string; access: string }> = {
@@ -46,7 +74,7 @@ const COMMANDS: Record<string, { description: string; access: string }> = {
 		]),
 	),
 	doctor: {
-		description: `接続と1画面の表の形式を確認します。個人情報は出力しません（ouj doctor [${Object.keys(MENUS).join("|")}]、既定は ${DEFAULT_DOCTOR_MENU}）`,
+		description: `接続と1画面の表の形式を確認します。個人情報は出力しません（ouj doctor [${doctorMenus().join("|")}]、既定は ${DEFAULT_DOCTOR_MENU}）`,
 		access: "毎回ログインし、指定の1画面だけを開きます。",
 	},
 	"cache-clear": {
@@ -73,6 +101,9 @@ function buildHelp(): string {
 ${commands}
 
 一覧のコマンド（${Object.keys(MENUS).join(", ")}）の${TABLE_OPTIONS}
+検索できるコマンド（class-contacts, exam-timetable）の追加のオプション:
+${SEARCH_OPTIONS}exam-timetable だけの追加のオプション:
+${TYPE_OPTION}
 守ること:
   - 読み取り専用です。申請、投稿、提出はできません。
   - サーバー負荷を避けるため、ループ、並列実行、定期実行、自動再試行をしないでください。
@@ -102,7 +133,7 @@ function buildCommandHelp(command: string): string {
 		? COMMANDS[command]
 		: undefined;
 	if (!entry) throw new OujError("USAGE", `未知のコマンドです: ${command}`);
-	const options = isMenuName(command) ? `\n${TABLE_OPTIONS}` : "";
+	const options = isMenuName(command) ? `\n${tableOptionsHelp(command)}` : "";
 	return `ouj ${command}: ${entry.description}\n通信: ${entry.access}\n${options}`;
 }
 
@@ -116,6 +147,15 @@ function requireEnv(env: Dependencies["env"], name: string): string {
 	return value;
 }
 
+const TABLE_OPTION_NAMES = [
+	"fields",
+	"limit",
+	"refresh",
+	"year",
+	"term",
+	"type",
+] as const;
+
 function parseCommandLine(argv: string[]) {
 	try {
 		return parseArgs({
@@ -125,6 +165,9 @@ function parseCommandLine(argv: string[]) {
 				fields: { type: "string" },
 				limit: { type: "string" },
 				refresh: { type: "boolean" },
+				year: { type: "string" },
+				term: { type: "string" },
+				type: { type: "string" },
 				help: { type: "boolean", short: "h" },
 			},
 		});
@@ -178,6 +221,61 @@ function selectRows(
 	);
 }
 
+/** 検索条件を検証する。検索できない画面への指定と、必須の条件の不足は使い方の誤りにする */
+function parseSearchQuery(
+	name: MenuName,
+	values: ReturnType<typeof parseCommandLine>["values"],
+): SearchQuery | undefined {
+	const search = menuSearch(name);
+	const { year, term, type } = values;
+	if (!search) {
+		if (year !== undefined || term !== undefined || type !== undefined) {
+			throw new OujError(
+				"USAGE",
+				`${name} には --year、--term、--type を指定できません`,
+			);
+		}
+		return undefined;
+	}
+	if (type !== undefined && !search.lectureClassField) {
+		throw new OujError("USAGE", `${name} には --type を指定できません`);
+	}
+	if (year === undefined && term === undefined && type === undefined) {
+		if (search.required) {
+			throw new OujError("USAGE", `${name} には --year と --term が必須です`);
+		}
+		return undefined;
+	}
+	if (year === undefined || !/^20\d{2}$/.test(year)) {
+		throw new OujError(
+			"USAGE",
+			"--year には20で始まる4桁の年度を指定してください",
+		);
+	}
+	if (term !== "1" && term !== "2") {
+		throw new OujError("USAGE", "--term には 1 か 2 を指定してください");
+	}
+	if (type === undefined) return { year, term };
+	const lectureClass = Object.hasOwn(LECTURE_CLASSES, type)
+		? LECTURE_CLASSES[type]
+		: undefined;
+	if (!lectureClass) {
+		throw new OujError(
+			"USAGE",
+			`--type には ${Object.keys(LECTURE_CLASSES).join(", ")} のいずれかを指定してください`,
+		);
+	}
+	return { year, term, lectureClass };
+}
+
+/** 検索条件ごとに別の一覧として保存するためのキャッシュ名を返す */
+function cacheName(name: MenuName, query: SearchQuery | undefined): string {
+	if (!query) return name;
+	return [name, query.year, query.term, query.lectureClass]
+		.filter(Boolean)
+		.join("-");
+}
+
 async function runTableCommand(
 	name: MenuName,
 	values: ReturnType<typeof parseCommandLine>["values"],
@@ -186,19 +284,21 @@ async function runTableCommand(
 	const { env, store, fetchTable } = dependencies;
 	const fields = parseFields(values.fields);
 	const limit = parseLimit(values.limit);
+	const query = parseSearchQuery(name, values);
+	const cacheKey = cacheName(name, query);
 	const username = requireEnv(env, "OUJ_USERNAME");
 
 	const cached = values.refresh
 		? undefined
-		: await store.readCache(username, name);
+		: await store.readCache(username, cacheKey);
 	let table = cached;
 	if (!table) {
 		const password = requireEnv(env, "OUJ_PASSWORD");
 		await store.acquireLoginSlot();
 		table = await store.writeCache(
 			username,
-			name,
-			await fetchTable({ username, password }, name),
+			cacheKey,
+			await fetchTable({ username, password }, name, query),
 		);
 	}
 	return {
@@ -216,10 +316,10 @@ async function runDoctor(
 ): Promise<unknown> {
 	const { env, store, doctor } = dependencies;
 	const name = target ?? DEFAULT_DOCTOR_MENU;
-	if (!isMenuName(name)) {
+	if (!isMenuName(name) || menuSearch(name)?.required) {
 		throw new OujError(
 			"USAGE",
-			`doctor で確認できない画面です: ${name}（指定できる画面: ${Object.keys(MENUS).join(", ")}）`,
+			`doctor で確認できない画面です: ${name}（指定できる画面: ${doctorMenus().join(", ")}）`,
 		);
 	}
 	const credentials = {
@@ -248,14 +348,13 @@ async function execute(
 		throw new OujError("USAGE", "コマンドを1つ指定してください");
 	}
 	const isTableCommand = isMenuName(command);
-	const hasTableOption =
-		values.fields !== undefined ||
-		values.limit !== undefined ||
-		values.refresh !== undefined;
+	const hasTableOption = TABLE_OPTION_NAMES.some(
+		(option) => values[option] !== undefined,
+	);
 	if (!isTableCommand && hasTableOption) {
 		throw new OujError(
 			"USAGE",
-			`${command} には --fields、--limit、--refresh を指定できません`,
+			`${command} には一覧用のオプションを指定できません`,
 		);
 	}
 

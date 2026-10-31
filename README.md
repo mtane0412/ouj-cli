@@ -28,6 +28,9 @@ node dist/cli.js grades       # 履修成績
 node dist/cli.js contacts     # 学内連絡の一覧
 node dist/cli.js files        # 授業共有ファイルの一覧
 node dist/cli.js schedule     # 今週のスケジュール（9:00〜21:00）
+node dist/cli.js class-contacts                           # 今学期の授業連絡の一覧
+node dist/cli.js class-contacts --year 2026 --term 1      # 指定した学期の授業連絡の一覧
+node dist/cli.js exam-timetable --year 2026 --term 2      # 単位認定試験時間割（--type all|broadcast|online）
 node dist/cli.js doctor       # 接続と学内連絡の表の形式だけを確認（個人情報は出力しない）
 node dist/cli.js doctor grades  # 確認する1画面を指定する
 node dist/cli.js --help       # コマンド、出力形式、終了コードを表示（通信しない）

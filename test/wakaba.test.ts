@@ -7,9 +7,11 @@ import { HttpClient } from "../src/http-client.js";
 import {
 	checkMenu,
 	login,
+	MENUS,
 	openMenu,
 	parseTable,
 	parseWeeklySchedule,
+	searchMenu,
 } from "../src/wakaba.js";
 
 const PORTAL_URL = "https://www.wakaba.ouj.ac.jp/portal/";
@@ -325,6 +327,161 @@ describe("parseTable", () => {
 				message: expect.stringContaining("列数"),
 			}),
 		);
+	});
+});
+
+describe("searchMenu", () => {
+	const classContactsPage = {
+		url: "https://www.wakaba.ouj.ac.jp/portal/classcontact/classContactList/display",
+		body: `<form name="classcontact_classContactActionForm">
+		  <select name="schoolYear"><option value="2027">2027年度</option><option value="2026" selected>2026年度</option></select>
+		  <select name="semesterCode"><option value="">選択</option><option value="2" selected>２学期</option></select>
+		  <input type="radio" name="subjectZemiClas" value="1" checked><input type="radio" name="subjectZemiClas" value="2">
+		  <input type="text" name="reportDateStart" value="2026/04/01">
+		  <input type="checkbox" name="onlyUnRead" value="true">
+		  <input type="text" name="studentCode" value="学生番号" disabled>
+		  <input type="hidden" name="taglib.html.TOKEN" value="検索トークン">
+		</form>`,
+	};
+	const examPage = {
+		url: "https://www.wakaba.ouj.ac.jp/kyoumu/SC02020100101/display.do",
+		body: `<form name="SC02020100101F01Form">
+		  <input type="radio" name="searchCondVo.lectureClas" value="0" checked>
+		  <input type="hidden" name="taglib.html.TOKEN" value="検索トークン">
+		</form>`,
+	};
+
+	it("授業連絡は画面のフォームの値に検索条件を重ねて1回だけ送る", async () => {
+		const posts: RecordedPost[] = [];
+
+		await searchMenu(fakeSite(posts), classContactsPage, "class-contacts", {
+			year: "2025",
+			term: "1",
+		});
+
+		expect(posts).toHaveLength(1);
+		expect(posts[0]?.url).toBe(
+			"https://www.wakaba.ouj.ac.jp/portal/classcontact/classContactList/selectClassContactList",
+		);
+		expect(posts[0]?.body.get("schoolYear")).toBe("2025");
+		expect(posts[0]?.body.get("semesterCode")).toBe("1");
+		expect(posts[0]?.body.get("subjectZemiClas")).toBe("1");
+		expect(posts[0]?.body.get("taglib.html.TOKEN")).toBe("検索トークン");
+		// 既定の連絡日で過去の学期が絞られないよう、開始日を空にする
+		expect(posts[0]?.body.get("reportDateStart")).toBe("");
+		// ブラウザと同じく、未選択のチェックボックスと無効な入力欄は送らない
+		expect(posts[0]?.body.has("onlyUnRead")).toBe(false);
+		expect(posts[0]?.body.has("studentCode")).toBe(false);
+	});
+
+	it("押していないボタンは送らず、値のない選択肢はブラウザと同じ値を送る", async () => {
+		const posts: RecordedPost[] = [];
+		const body = `<form name="classcontact_classContactActionForm">
+		  <input type="submit" name="clear" value="クリア">
+		  <input type="reset" name="reset" value="戻す">
+		  <input type="image" name="icon" value="画像">
+		  <input type="button" name="action" value="操作">
+		  <input type="checkbox" name="onlyTodo" checked>
+		  <select name="subjectDispCode"><option selected>心理学概論</option></select>
+		</form>`;
+
+		await searchMenu(
+			fakeSite(posts),
+			{ url: classContactsPage.url, body },
+			"class-contacts",
+			{ year: "2026", term: "1" },
+		);
+
+		for (const button of ["clear", "reset", "icon", "action"]) {
+			expect(posts[0]?.body.has(button)).toBe(false);
+		}
+		expect(posts[0]?.body.get("onlyTodo")).toBe("on");
+		expect(posts[0]?.body.get("subjectDispCode")).toBe("心理学概論");
+	});
+
+	it("試験時間割は授業区分も送る", async () => {
+		const posts: RecordedPost[] = [];
+
+		await searchMenu(fakeSite(posts), examPage, "exam-timetable", {
+			year: "2026",
+			term: "2",
+			lectureClass: "1",
+		});
+
+		expect(posts[0]?.url).toBe(
+			"https://www.wakaba.ouj.ac.jp/kyoumu/SC02020100101/search.do",
+		);
+		expect(posts[0]?.body.get("searchCondVo.registerYear")).toBe("2026");
+		expect(posts[0]?.body.get("searchCondVo.registerSemesterCode")).toBe("2");
+		expect(posts[0]?.body.get("searchCondVo.lectureClas")).toBe("1");
+	});
+
+	it("検索フォームがない画面は通信せず SITE_CHANGED で失敗する", async () => {
+		const posts: RecordedPost[] = [];
+
+		await expect(
+			searchMenu(
+				fakeSite(posts),
+				{ url: classContactsPage.url, body: "<title>エラー画面</title>" },
+				"class-contacts",
+				{ year: "2026", term: "1" },
+			),
+		).rejects.toMatchObject({ code: "SITE_CHANGED" });
+		expect(posts).toHaveLength(0);
+	});
+});
+
+describe("検索結果の解析", () => {
+	it("授業連絡の空の結果は0件として返す", () => {
+		const html = `<div id="search-result"><div class="center">表示するデータがありません。</div></div>`;
+
+		expect(MENUS["class-contacts"].parse(html)).toEqual({
+			headers: [],
+			rows: [],
+		});
+	});
+
+	it("授業連絡の結果の表が消えた画面は SITE_CHANGED で失敗する", () => {
+		expect(() =>
+			MENUS["class-contacts"].parse("<title>エラー画面</title>"),
+		).toThrow(expect.objectContaining({ code: "SITE_CHANGED" }));
+	});
+
+	it("結果の欄以外に同じ文言があるだけの画面は SITE_CHANGED で失敗する", () => {
+		const html =
+			"<p>該当がない場合は「表示するデータがありません」と表示します</p>";
+
+		expect(() => MENUS["class-contacts"].parse(html)).toThrow(
+			expect.objectContaining({ code: "SITE_CHANGED" }),
+		);
+	});
+
+	it("途中に「（非表示）」を含むだけの見出しは残す", () => {
+		const html = `<table id="searchResultList"><thead><tr><th>備考（非表示を含む）</th></tr></thead>
+		  <tbody><tr><td>振替あり</td></tr></tbody></table>`;
+
+		expect(MENUS["exam-timetable"].parse(html).headers).toEqual([
+			"備考（非表示を含む）",
+		]);
+	});
+
+	it("授業連絡の結果から、操作用と非表示の列を除く", () => {
+		const html = `<table id="tbl_A01_01"><thead><tr><th></th><th>タイトル</th><th></th></tr></thead>
+		  <tbody><tr><td><input></td><td>休講のお知らせ（未読）</td><td>12345</td></tr></tbody></table>`;
+
+		expect(MENUS["class-contacts"].parse(html).rows).toEqual([
+			{ タイトル: "休講のお知らせ（未読）" },
+		]);
+	});
+
+	it("試験時間割の結果から、非表示と書かれた列を除く", () => {
+		const html = `<table id="searchResultList"><thead><tr><th>試験日</th><th>科目名</th><th>曜日コード（非表示）</th></tr></thead>
+		  <tbody><tr><td>*&nbsp;</td><td>初歩からの数学&nbsp;</td><td>0</td></tr></tbody></table>`;
+
+		expect(MENUS["exam-timetable"].parse(html)).toEqual({
+			headers: ["試験日", "科目名"],
+			rows: [{ 試験日: "*", 科目名: "初歩からの数学" }],
+		});
 	});
 });
 
