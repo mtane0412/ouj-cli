@@ -3,6 +3,7 @@
  * 成功時の結果は JSON で標準出力へ、失敗は JSON で標準エラーへ書く。
  * 一覧はキャッシュを優先し、ログインが必要なときだけ連続ログインの制限を確認してから通信する。
  */
+import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
 import { describeFailure, EXIT_CODES, OujError } from "./errors.js";
 import type { CachedTable, LocalStore, StoredTable } from "./local-store.js";
@@ -14,10 +15,12 @@ import {
 	type MenuName,
 	menuSearch,
 	type SearchQuery,
+	type SyllabusQuery,
 } from "./wakaba.js";
 
 const MS_PER_SECOND = 1000;
 const MS_PER_MINUTE = 60 * MS_PER_SECOND;
+const SYLLABUS_KEY_LENGTH = 16;
 
 export interface Dependencies {
 	env: Record<string, string | undefined>;
@@ -27,6 +30,11 @@ export interface Dependencies {
 		credentials: Credentials,
 		name: MenuName,
 		query: SearchQuery | undefined,
+	) => Promise<StoredTable>;
+	/** ログインしてシラバスを1科目だけ取得する */
+	fetchSyllabus: (
+		credentials: Credentials,
+		query: SyllabusQuery,
 	) => Promise<StoredTable>;
 	/** ログインして指定の1画面の接続と表の形式を確認する */
 	doctor: (credentials: Credentials, name: MenuName) => Promise<unknown>;
@@ -58,6 +66,10 @@ const SEARCH_OPTIONS = `  --year <年度>        開講年度を20で始まる4�
 const TYPE_OPTION = `  --type <${Object.keys(LECTURE_CLASSES).join("|")}>  授業区分を指定します
 `;
 
+const SYLLABUS_OPTIONS = `  --name <科目名>      検索する科目名を指定します。部分一致で検索されます
+  --code <科目コード>  複数が該当したときに、1件に絞る科目コードを指定します
+`;
+
 /** 画面ごとに使えるオプションの説明を返す */
 function tableOptionsHelp(name: MenuName): string {
 	const search = menuSearch(name);
@@ -76,6 +88,12 @@ const COMMANDS: Record<string, { description: string; access: string }> = {
 	doctor: {
 		description: `接続と1画面の表の形式を確認します。個人情報は出力しません（ouj doctor [${doctorMenus().join("|")}]、既定は ${DEFAULT_DOCTOR_MENU}）`,
 		access: "毎回ログインし、指定の1画面だけを開きます。",
+	},
+	syllabus: {
+		description:
+			"シラバスを1科目だけ取得します。--year、--term、--name が必須で、複数が該当すると候補を示して失敗します",
+		access:
+			"有効なキャッシュがあれば通信しません。なければログインし、メニュー、検索、詳細の3画面を開きます。",
 	},
 	"cache-clear": {
 		description: "保存した一覧を消します",
@@ -104,6 +122,8 @@ ${commands}
 検索できるコマンド（class-contacts, exam-timetable）の追加のオプション:
 ${SEARCH_OPTIONS}exam-timetable だけの追加のオプション:
 ${TYPE_OPTION}
+syllabus は --year、--term に加えて次のオプションを指定します（一覧のオプションも使えます）:
+${SYLLABUS_OPTIONS}
 守ること:
   - 読み取り専用です。申請、投稿、提出はできません。
   - サーバー負荷を避けるため、ループ、並列実行、定期実行、自動再試行をしないでください。
@@ -133,7 +153,11 @@ function buildCommandHelp(command: string): string {
 		? COMMANDS[command]
 		: undefined;
 	if (!entry) throw new OujError("USAGE", `未知のコマンドです: ${command}`);
-	const options = isMenuName(command) ? `\n${tableOptionsHelp(command)}` : "";
+	const options = isMenuName(command)
+		? `\n${tableOptionsHelp(command)}`
+		: command === "syllabus"
+			? `\n${TABLE_OPTIONS}${SEARCH_OPTIONS}${SYLLABUS_OPTIONS}`
+			: "";
 	return `ouj ${command}: ${entry.description}\n通信: ${entry.access}\n${options}`;
 }
 
@@ -154,6 +178,8 @@ const TABLE_OPTION_NAMES = [
 	"year",
 	"term",
 	"type",
+	"name",
+	"code",
 ] as const;
 
 function parseCommandLine(argv: string[]) {
@@ -168,6 +194,8 @@ function parseCommandLine(argv: string[]) {
 				year: { type: "string" },
 				term: { type: "string" },
 				type: { type: "string" },
+				name: { type: "string" },
+				code: { type: "string" },
 				help: { type: "boolean", short: "h" },
 			},
 		});
@@ -221,6 +249,19 @@ function selectRows(
 	);
 }
 
+function parseYearAndTerm(year: string | undefined, term: string | undefined) {
+	if (year === undefined || !/^20\d{2}$/.test(year)) {
+		throw new OujError(
+			"USAGE",
+			"--year には20で始まる4桁の年度を指定してください",
+		);
+	}
+	if (term !== "1" && term !== "2") {
+		throw new OujError("USAGE", "--term には 1 か 2 を指定してください");
+	}
+	return { year, term };
+}
+
 /** 検索条件を検証する。検索できない画面への指定と、必須の条件の不足は使い方の誤りにする */
 function parseSearchQuery(
 	name: MenuName,
@@ -228,6 +269,9 @@ function parseSearchQuery(
 ): SearchQuery | undefined {
 	const search = menuSearch(name);
 	const { year, term, type } = values;
+	if (values.name !== undefined || values.code !== undefined) {
+		throw new OujError("USAGE", `${name} には --name、--code を指定できません`);
+	}
 	if (!search) {
 		if (year !== undefined || term !== undefined || type !== undefined) {
 			throw new OujError(
@@ -246,16 +290,8 @@ function parseSearchQuery(
 		}
 		return undefined;
 	}
-	if (year === undefined || !/^20\d{2}$/.test(year)) {
-		throw new OujError(
-			"USAGE",
-			"--year には20で始まる4桁の年度を指定してください",
-		);
-	}
-	if (term !== "1" && term !== "2") {
-		throw new OujError("USAGE", "--term には 1 か 2 を指定してください");
-	}
-	if (type === undefined) return { year, term };
+	const period = parseYearAndTerm(year, term);
+	if (type === undefined) return period;
 	const lectureClass = Object.hasOwn(LECTURE_CLASSES, type)
 		? LECTURE_CLASSES[type]
 		: undefined;
@@ -265,7 +301,7 @@ function parseSearchQuery(
 			`--type には ${Object.keys(LECTURE_CLASSES).join(", ")} のいずれかを指定してください`,
 		);
 	}
-	return { year, term, lectureClass };
+	return { ...period, lectureClass };
 }
 
 /** 検索条件ごとに別の一覧として保存するためのキャッシュ名を返す */
@@ -276,16 +312,16 @@ function cacheName(name: MenuName, query: SearchQuery | undefined): string {
 		.join("-");
 }
 
-async function runTableCommand(
-	name: MenuName,
+/** キャッシュを優先して一覧を用意し、列と行数を絞った出力を返す */
+async function outputTable(
+	cacheKey: string,
 	values: ReturnType<typeof parseCommandLine>["values"],
 	dependencies: Dependencies,
+	load: (credentials: Credentials) => Promise<StoredTable>,
 ): Promise<unknown> {
-	const { env, store, fetchTable } = dependencies;
+	const { env, store } = dependencies;
 	const fields = parseFields(values.fields);
 	const limit = parseLimit(values.limit);
-	const query = parseSearchQuery(name, values);
-	const cacheKey = cacheName(name, query);
 	const username = requireEnv(env, "OUJ_USERNAME");
 
 	const cached = values.refresh
@@ -298,7 +334,7 @@ async function runTableCommand(
 		table = await store.writeCache(
 			username,
 			cacheKey,
-			await fetchTable({ username, password }, name, query),
+			await load({ username, password }),
 		);
 	}
 	return {
@@ -308,6 +344,55 @@ async function runTableCommand(
 		total: table.rows.length,
 		rows: selectRows(table, fields, limit),
 	};
+}
+
+async function runTableCommand(
+	name: MenuName,
+	values: ReturnType<typeof parseCommandLine>["values"],
+	dependencies: Dependencies,
+): Promise<unknown> {
+	const query = parseSearchQuery(name, values);
+	return outputTable(
+		cacheName(name, query),
+		values,
+		dependencies,
+		(credentials) => dependencies.fetchTable(credentials, name, query),
+	);
+}
+
+function parseSyllabusQuery(
+	values: ReturnType<typeof parseCommandLine>["values"],
+): SyllabusQuery {
+	if (values.type !== undefined) {
+		throw new OujError("USAGE", "syllabus には --type を指定できません");
+	}
+	const period = parseYearAndTerm(values.year, values.term);
+	if (!values.name) {
+		throw new OujError("USAGE", "syllabus には --name が必須です");
+	}
+	if (values.code === undefined) return { ...period, name: values.name };
+	if (!/^\d+$/.test(values.code)) {
+		throw new OujError(
+			"USAGE",
+			"--code には数字の科目コードを指定してください",
+		);
+	}
+	return { ...period, name: values.name, code: values.code };
+}
+
+async function runSyllabus(
+	values: ReturnType<typeof parseCommandLine>["values"],
+	dependencies: Dependencies,
+): Promise<unknown> {
+	const query = parseSyllabusQuery(values);
+	// 科目名は任意の文字列のため、ファイル名に使えるようハッシュにする
+	const key = createHash("sha256")
+		.update(JSON.stringify(query))
+		.digest("hex")
+		.slice(0, SYLLABUS_KEY_LENGTH);
+	return outputTable(`syllabus-${key}`, values, dependencies, (credentials) =>
+		dependencies.fetchSyllabus(credentials, query),
+	);
 }
 
 async function runDoctor(
@@ -347,7 +432,7 @@ async function execute(
 	if (!command) {
 		throw new OujError("USAGE", "コマンドを1つ指定してください");
 	}
-	const isTableCommand = isMenuName(command);
+	const isTableCommand = isMenuName(command) || command === "syllabus";
 	const hasTableOption = TABLE_OPTION_NAMES.some(
 		(option) => values[option] !== undefined,
 	);
@@ -362,8 +447,10 @@ async function execute(
 	await dependencies.store.purgeExpiredCache();
 
 	let result: unknown;
-	if (isTableCommand) {
+	if (isMenuName(command)) {
 		result = await runTableCommand(command, values, dependencies);
+	} else if (command === "syllabus") {
+		result = await runSyllabus(values, dependencies);
 	} else if (command === "doctor") {
 		result = await runDoctor(extra[0], dependencies);
 	} else if (command === "cache-clear") {
