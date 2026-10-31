@@ -31,6 +31,8 @@ export interface Dependencies {
 		name: MenuName,
 		query: SearchQuery | undefined,
 	) => Promise<StoredTable>;
+	/** ログインして学内連絡の本文を1件だけ取得する */
+	fetchContact: (credentials: Credentials, id: string) => Promise<StoredTable>;
 	/** ログインしてシラバスを1科目だけ取得する */
 	fetchSyllabus: (
 		credentials: Credentials,
@@ -54,6 +56,7 @@ function doctorMenus(): MenuName[] {
 
 const TABLE_ACCESS =
 	"有効なキャッシュがあれば通信しません。なければログインします。";
+const CONTACT_READ_NOTE = "詳細を開くと、その連絡は未読から既読に変わります。";
 const TABLE_OPTIONS = `オプション:
   --fields <列名,...>  出力する列名をカンマ区切りで指定します
   --limit <件数>       出力する行数の上限を1以上の整数で指定します
@@ -95,6 +98,11 @@ const COMMANDS: Record<string, { description: string; access: string }> = {
 		access:
 			"有効なキャッシュがあれば通信しません。なければログインし、メニュー、検索、詳細の3画面を開きます。",
 	},
+	contact: {
+		description:
+			"学内連絡の本文を1件だけ取得します。--id に contacts の連絡IDを指定します",
+		access: `有効なキャッシュがあれば通信しません。なければログインし、一覧と詳細の2画面を開きます。${CONTACT_READ_NOTE}`,
+	},
 	"cache-clear": {
 		description: "保存した一覧を消します",
 		access: "通信しません。",
@@ -122,6 +130,8 @@ ${commands}
 検索できるコマンド（class-contacts, exam-timetable）の追加のオプション:
 ${SEARCH_OPTIONS}exam-timetable だけの追加のオプション:
 ${TYPE_OPTION}
+contact は --id で読む連絡を指定します（一覧のオプションも使えます）。${CONTACT_READ_NOTE}
+
 syllabus は --year、--term に加えて次のオプションを指定します（一覧のオプションも使えます）:
 ${SYLLABUS_OPTIONS}
 守ること:
@@ -157,7 +167,9 @@ function buildCommandHelp(command: string): string {
 		? `\n${tableOptionsHelp(command)}`
 		: command === "syllabus"
 			? `\n${TABLE_OPTIONS}${SEARCH_OPTIONS}${SYLLABUS_OPTIONS}`
-			: "";
+			: command === "contact"
+				? `\n${TABLE_OPTIONS}  --id <連絡ID>        contacts の結果の連絡IDを指定します\n`
+				: "";
 	return `ouj ${command}: ${entry.description}\n通信: ${entry.access}\n${options}`;
 }
 
@@ -180,6 +192,7 @@ const TABLE_OPTION_NAMES = [
 	"type",
 	"name",
 	"code",
+	"id",
 ] as const;
 
 function parseCommandLine(argv: string[]) {
@@ -196,6 +209,7 @@ function parseCommandLine(argv: string[]) {
 				type: { type: "string" },
 				name: { type: "string" },
 				code: { type: "string" },
+				id: { type: "string" },
 				help: { type: "boolean", short: "h" },
 			},
 		});
@@ -269,8 +283,15 @@ function parseSearchQuery(
 ): SearchQuery | undefined {
 	const search = menuSearch(name);
 	const { year, term, type } = values;
-	if (values.name !== undefined || values.code !== undefined) {
-		throw new OujError("USAGE", `${name} には --name、--code を指定できません`);
+	if (
+		values.name !== undefined ||
+		values.code !== undefined ||
+		values.id !== undefined
+	) {
+		throw new OujError(
+			"USAGE",
+			`${name} には --name、--code、--id を指定できません`,
+		);
 	}
 	if (!search) {
 		if (year !== undefined || term !== undefined || type !== undefined) {
@@ -363,8 +384,8 @@ async function runTableCommand(
 function parseSyllabusQuery(
 	values: ReturnType<typeof parseCommandLine>["values"],
 ): SyllabusQuery {
-	if (values.type !== undefined) {
-		throw new OujError("USAGE", "syllabus には --type を指定できません");
+	if (values.type !== undefined || values.id !== undefined) {
+		throw new OujError("USAGE", "syllabus には --type、--id を指定できません");
 	}
 	const period = parseYearAndTerm(values.year, values.term);
 	if (!values.name) {
@@ -392,6 +413,22 @@ async function runSyllabus(
 		.slice(0, SYLLABUS_KEY_LENGTH);
 	return outputTable(`syllabus-${key}`, values, dependencies, (credentials) =>
 		dependencies.fetchSyllabus(credentials, query),
+	);
+}
+
+async function runContact(
+	values: ReturnType<typeof parseCommandLine>["values"],
+	dependencies: Dependencies,
+): Promise<unknown> {
+	const { id, year, term, type, name, code } = values;
+	if ([year, term, type, name, code].some((value) => value !== undefined)) {
+		throw new OujError("USAGE", "contact に指定できる検索条件は --id だけです");
+	}
+	if (id === undefined || !/^\d+$/.test(id)) {
+		throw new OujError("USAGE", "--id には数字の連絡IDを指定してください");
+	}
+	return outputTable(`contact-${id}`, values, dependencies, (credentials) =>
+		dependencies.fetchContact(credentials, id),
 	);
 }
 
@@ -432,7 +469,8 @@ async function execute(
 	if (!command) {
 		throw new OujError("USAGE", "コマンドを1つ指定してください");
 	}
-	const isTableCommand = isMenuName(command) || command === "syllabus";
+	const isTableCommand =
+		isMenuName(command) || command === "syllabus" || command === "contact";
 	const hasTableOption = TABLE_OPTION_NAMES.some(
 		(option) => values[option] !== undefined,
 	);
@@ -451,6 +489,8 @@ async function execute(
 		result = await runTableCommand(command, values, dependencies);
 	} else if (command === "syllabus") {
 		result = await runSyllabus(values, dependencies);
+	} else if (command === "contact") {
+		result = await runContact(values, dependencies);
 	} else if (command === "doctor") {
 		result = await runDoctor(extra[0], dependencies);
 	} else if (command === "cache-clear") {

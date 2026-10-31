@@ -66,7 +66,7 @@ export const MENUS = {
 		menuCode: "B0201",
 		nextPath: "/commoncontact/commonContact/initialize",
 		external: false,
-		parse: (html) => parseTable(html, "#tbl_commoncontact_rcv"),
+		parse: parseContactList,
 	},
 	files: {
 		description: "授業共有ファイルの一覧を取得します",
@@ -648,4 +648,111 @@ export async function fetchSyllabus(
 		},
 	);
 	return parseSyllabus(detail.body);
+}
+
+const CONTACT_LIST_SELECTOR = "#tbl_commoncontact_rcv";
+const CONTACT_FORM_SELECTOR =
+	'form[name="commoncontact_commonContactActionForm"]';
+const CONTACT_ID_HEADER = "連絡ID";
+/** 一覧のリンクが詳細画面へ渡す引数（連絡ID、行番号、画面の種類、連絡の区分） */
+const CONTACT_LINK = /dtlScreen\('(\d+)',\s*'(\d+)',\s*'(\w+)',\s*'(\d+)'\)/;
+
+/** 学内連絡の一覧を変換し、本文の取得に使う連絡IDを各行に加える */
+function parseContactList(html: string): Table {
+	const { headers, rows } = parseTable(html, CONTACT_LIST_SELECTOR);
+	const $ = cheerio.load(html);
+	const ids = $(`${CONTACT_LIST_SELECTOR} tbody tr`)
+		.toArray()
+		.map(
+			(row) => CONTACT_LINK.exec($(row).find("a").attr("onclick") ?? "")?.[1],
+		);
+	return {
+		headers: [...headers, CONTACT_ID_HEADER],
+		rows: rows.map((row, index) => {
+			const id = ids[index];
+			if (!id) {
+				throw new OujError(
+					"SITE_CHANGED",
+					"学内連絡の一覧に詳細へのリンクがない行があります",
+				);
+			}
+			return { ...row, [CONTACT_ID_HEADER]: id };
+		}),
+	};
+}
+
+/** 本文の HTML を、段落の改行とリンク先を残した文字列にする */
+function richText(
+	$: cheerio.CheerioAPI,
+	element: ReturnType<cheerio.CheerioAPI>,
+) {
+	const copy = element.clone();
+	copy.find("a[href]").each((_, link) => {
+		$(link).append(`（${$(link).attr("href")}）`);
+	});
+	copy.find("br").replaceWith("\n");
+	copy.find("p, li, div, tr").append("\n");
+	return copy
+		.text()
+		.split("\n")
+		.map((line) => line.replace(/\s+/g, " ").trim())
+		.filter(Boolean)
+		.join("\n");
+}
+
+/** 学内連絡の詳細画面を、項目と内容の行データへ変換する */
+function parseContactDetail(html: string): Table {
+	const $ = cheerio.load(html);
+	const rows = $(".ttb_entry .row")
+		.toArray()
+		.flatMap((row) => {
+			const label = $(row).children(".th").text().replace(/\s+/g, " ").trim();
+			const value = $(row).children(".td");
+			if (!label || !value.length) return [];
+			return [{ 項目: label, 内容: richText($, value) }];
+		});
+	if (!rows.some((row) => row.項目 === "連絡内容")) {
+		throw new OujError(
+			"SITE_CHANGED",
+			`学内連絡の詳細の形式が想定と異なります（画面: ${$("title").text().trim()}）`,
+		);
+	}
+	return { headers: ["項目", "内容"], rows };
+}
+
+/**
+ * ログインして学内連絡の本文を1件だけ取得する。
+ * 開く画面は一覧と詳細の2つで、一覧にない連絡IDは詳細を開かない。
+ */
+export async function fetchContact(
+	client: HttpClient,
+	credentials: Credentials,
+	id: string,
+): Promise<Table> {
+	const home = await login(client, credentials);
+	const list = await openMenu(client, home, "contacts");
+	const $ = cheerio.load(list.body);
+	const link = $(`${CONTACT_LIST_SELECTOR} a[onclick]`)
+		.toArray()
+		.map((element) => CONTACT_LINK.exec($(element).attr("onclick") ?? ""))
+		.find((match) => match?.[1] === id);
+	if (!link) {
+		throw new OujError(
+			"USAGE",
+			`連絡ID ${id} は学内連絡の一覧にありません。\`ouj contacts\` で確認してください`,
+		);
+	}
+	const [, commonContactId, selectIndex, mode, commonContactKindDivision] =
+		link;
+	const detail = await client.post(
+		`${PORTAL_ORIGIN}/portal/commoncontact/commonContact/dtlEdit`,
+		{
+			...formFields($, $(CONTACT_FORM_SELECTOR)),
+			mode: mode ?? "",
+			selectIndex: selectIndex ?? "",
+			commonContactId: commonContactId ?? "",
+			commonContactKindDivision: commonContactKindDivision ?? "",
+		},
+	);
+	return parseContactDetail(detail.body);
 }
