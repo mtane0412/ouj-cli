@@ -73,7 +73,7 @@ export const MENUS = {
 		menuCode: "A0204",
 		nextPath: "/classfile/classFile/initialize",
 		external: false,
-		parse: (html) => parseTable(html, "#tbl_classFile"),
+		parse: parseFileList,
 	},
 	grades: {
 		description: "履修成績を取得します",
@@ -657,6 +657,7 @@ const CONTACT_ID_HEADER = "連絡ID";
 /** 一覧のリンクが詳細画面へ渡す引数（連絡ID、行番号、画面の種類、連絡の区分） */
 const CONTACT_LINK = /dtlScreen\('(\d+)',\s*'(\d+)',\s*'(\w+)',\s*'(\d+)'\)/;
 
+const LINE_BREAK_MARK = "\u0001";
 const EXTERNAL_LINK = /^(https?:|mailto:)/i;
 
 /** 学内連絡の一覧を変換し、本文の取得に使う連絡IDを各行に加える */
@@ -699,21 +700,22 @@ function richText(
 			$(link).append(`（${href}）`);
 		}
 	});
+	copy.find("script, style").remove();
 	copy.find("td, th").append(" ");
-	copy.find("br").replaceWith("\n");
-	copy.find("p, li, div, tr").append("\n");
+	// HTML ソース上の改行は空白として扱い、段落の区切りだけを改行にする
+	copy.find("br").replaceWith(LINE_BREAK_MARK);
+	copy.find("p, li, div, tr").append(LINE_BREAK_MARK);
 	return copy
 		.text()
-		.split("\n")
+		.split(LINE_BREAK_MARK)
 		.map((line) => line.replace(/\s+/g, " ").trim())
 		.filter(Boolean)
 		.join("\n");
 }
 
-/** 学内連絡の詳細画面を、項目と内容の行データへ変換する */
-function parseContactDetail(html: string): Table {
-	const $ = cheerio.load(html);
-	const rows = $(".ttb_entry > .row")
+/** 詳細画面の入力欄風の表を、項目と内容の行にする。本文の中の入れ子の行は含めない */
+function parseEntryRows($: cheerio.CheerioAPI): Record<string, string>[] {
+	return $(".ttb_entry > .row")
 		.toArray()
 		.flatMap((row) => {
 			const label = $(row).children(".th").text().replace(/\s+/g, " ").trim();
@@ -721,6 +723,12 @@ function parseContactDetail(html: string): Table {
 			if (!label || !value.length) return [];
 			return [{ 項目: label, 内容: richText($, value) }];
 		});
+}
+
+/** 学内連絡の詳細画面を、項目と内容の行データへ変換する */
+function parseContactDetail(html: string): Table {
+	const $ = cheerio.load(html);
+	const rows = parseEntryRows($);
 	if (!rows.some((row) => Object.values(row)[0] === "連絡内容")) {
 		throw new OujError(
 			"SITE_CHANGED",
@@ -772,4 +780,84 @@ export async function fetchContact(
 		},
 	);
 	return parseContactDetail(detail.body);
+}
+
+const FILE_LIST_SELECTOR = "#tbl_classFile";
+const FILE_FORM_SELECTOR = 'form[name="classfile_classFileActionForm"]';
+const FILE_INDEX_HEADER = "番号";
+
+/** 授業共有ファイルの一覧を変換し、詳細の取得に使う番号を各行に加える */
+function parseFileList(html: string): Table {
+	const { headers, rows } = parseTable(html, FILE_LIST_SELECTOR);
+	const $ = cheerio.load(html);
+	const indexes = $(`${FILE_LIST_SELECTOR} tbody tr`)
+		.toArray()
+		.map((row) => $(row).find('input[name="linkDetailIndex"]').attr("value"));
+	return {
+		headers: [...headers, FILE_INDEX_HEADER],
+		rows: rows.map((row, position) => {
+			const index = indexes[position];
+			if (index === undefined) {
+				throw new OujError(
+					"SITE_CHANGED",
+					"授業共有ファイルの一覧に詳細へのリンクがない行があります",
+				);
+			}
+			return { ...row, [FILE_INDEX_HEADER]: index };
+		}),
+	};
+}
+
+/**
+ * ログインして授業共有ファイルの詳細を1件だけ取得する。
+ * 開く画面は一覧と詳細の2つで、ファイル本体へは通信しない。
+ * 配布の条件を確認できないため、本体のダウンロードは実装しない（issue #10）。
+ */
+export async function fetchFileDetail(
+	client: HttpClient,
+	credentials: Credentials,
+	index: string,
+): Promise<Table> {
+	const home = await login(client, credentials);
+	const list = await openMenu(client, home, "files");
+	const $ = cheerio.load(list.body);
+	const form = $(FILE_FORM_SELECTOR);
+	if (!form.length) {
+		throw new OujError(
+			"SITE_CHANGED",
+			`授業共有ファイルのフォームが見つかりません（画面: ${$("title").text().trim()}）`,
+		);
+	}
+	const hasIndex = $(`${FILE_LIST_SELECTOR} input[name="linkDetailIndex"]`)
+		.toArray()
+		.some((input) => $(input).attr("value") === index);
+	if (!hasIndex) {
+		throw new OujError(
+			"USAGE",
+			`番号 ${index} は授業共有ファイルの一覧にありません。\`ouj files\` で確認してください`,
+		);
+	}
+	const hidden: Record<string, string> = {};
+	form.find('input[type="hidden"][name]').each((_, input) => {
+		const name = $(input).attr("name");
+		// 一覧の行ごとの入力欄は送らず、番号は URL で指定する
+		if (name && name !== "linkDetailIndex") {
+			hidden[name] = $(input).attr("value") ?? "";
+		}
+	});
+	const detail = await client.post(
+		`${PORTAL_ORIGIN}/portal/classfile/classFile/showClassFileDetail/${index}`,
+		hidden,
+	);
+	const $detail = cheerio.load(detail.body);
+	// 一括ダウンロードの操作は取得結果に含めない
+	$detail('[id^="fileListAllDownload"]').remove();
+	const rows = parseEntryRows($detail);
+	if (!rows.some((row) => Object.values(row)[0] === "タイトル")) {
+		throw new OujError(
+			"SITE_CHANGED",
+			`授業共有ファイルの詳細の形式が想定と異なります（画面: ${$detail("title").text().trim()}）`,
+		);
+	}
+	return { headers: ["項目", "内容"], rows };
 }

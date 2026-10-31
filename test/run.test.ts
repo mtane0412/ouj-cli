@@ -31,6 +31,9 @@ describe("run", () => {
 	let dependencies: Dependencies;
 	let fetchTable: ReturnType<typeof vi.fn<Dependencies["fetchTable"]>>;
 	let doctor: ReturnType<typeof vi.fn<Dependencies["doctor"]>>;
+	let fetchFileDetail: ReturnType<
+		typeof vi.fn<Dependencies["fetchFileDetail"]>
+	>;
 	let fetchContact: ReturnType<typeof vi.fn<Dependencies["fetchContact"]>>;
 	let fetchSyllabus: ReturnType<typeof vi.fn<Dependencies["fetchSyllabus"]>>;
 
@@ -53,7 +56,12 @@ describe("run", () => {
 			headers: ["項目", "内容"],
 			rows: [{ 項目: "タイトル", 内容: "図書館の休館" }],
 		}));
+		fetchFileDetail = vi.fn<Dependencies["fetchFileDetail"]>(async () => ({
+			headers: ["項目", "内容"],
+			rows: [{ 項目: "タイトル", 内容: "復習用スライド" }],
+		}));
 		dependencies = {
+			fetchFileDetail,
 			fetchContact,
 			fetchSyllabus,
 			env: { OUJ_USERNAME: "学生A", OUJ_PASSWORD: "秘密の文字列" },
@@ -85,6 +93,7 @@ describe("run", () => {
 				"exam-timetable",
 				"syllabus",
 				"contact",
+				"file",
 				"doctor",
 				"cache-clear",
 			]) {
@@ -455,6 +464,41 @@ describe("run", () => {
 
 			expect(errorOutput().code).toBe("USAGE");
 			expect(fetchContact).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("file", () => {
+		it("指定の1件の詳細を取得し、--refresh で取得し直せる", async () => {
+			expect(await run(["file", "--id", "0"], dependencies)).toBe(0);
+			expect(fetchFileDetail).toHaveBeenCalledWith(
+				{ username: "学生A", password: "秘密の文字列" },
+				"0",
+			);
+
+			currentTime += LOGIN_INTERVAL_MS;
+			expect(await run(["file", "--id", "0", "--refresh"], dependencies)).toBe(
+				0,
+			);
+			expect(fetchFileDetail).toHaveBeenCalledTimes(2);
+		});
+
+		it("--help はファイル本体を取得しないことを示す", async () => {
+			await run(["file", "--help"], dependencies);
+
+			expect(stdout.join("")).toContain("ファイル本体は取得しません");
+			expect(stdout.join("")).toContain("一覧の順");
+		});
+
+		it.each([
+			["--id なし", ["file"]],
+			["数字でない --id", ["file", "--id", "../外"]],
+			["0で始まる --id", ["file", "--id", "00"]],
+			["--year の指定", ["file", "--id", "0", "--year", "2026"]],
+		])("%s は通信せず USAGE で失敗する", async (_label, argv) => {
+			expect(await run(argv, dependencies)).toBe(2);
+
+			expect(errorOutput().code).toBe("USAGE");
+			expect(fetchFileDetail).not.toHaveBeenCalled();
 		});
 	});
 

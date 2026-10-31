@@ -14,6 +14,7 @@ import {
 	type Credentials,
 	checkMenu,
 	fetchContact,
+	fetchFileDetail,
 	fetchSyllabus,
 	login,
 	MENUS,
@@ -50,6 +51,8 @@ process.exitCode = await run(process.argv.slice(2), {
 	env: process.env,
 	store: new LocalStore(join(cacheHome, "ouj")),
 	fetchTable,
+	fetchFileDetail: (credentials, index) =>
+		fetchFileDetail(createClient(), credentials, index),
 	fetchContact: (credentials, id) =>
 		fetchContact(createClient(), credentials, id),
 	fetchSyllabus: (credentials, query) =>
