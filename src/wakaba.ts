@@ -255,7 +255,9 @@ export async function searchMenu(
 		);
 	}
 	const fields: Record<string, string> = {};
-	form.find("input[name], select[name]").each((_, element) => {
+	const fieldSelector =
+		"input[name]:not([type=submit],[type=reset],[type=image],[type=button],[type=file]), select[name]";
+	form.find(fieldSelector).each((_, element) => {
 		const input = $(element);
 		const fieldName = input.attr("name");
 		const type = input.attr("type");
@@ -263,11 +265,15 @@ export async function searchMenu(
 		if ((type === "checkbox" || type === "radio") && !input.is("[checked]")) {
 			return;
 		}
-		fields[fieldName] = input.is("select")
-			? (input.find("option[selected]").attr("value") ??
-				input.find("option").first().attr("value") ??
-				"")
-			: (input.attr("value") ?? "");
+		if (input.is("select")) {
+			// 値のない選択肢は、ブラウザと同じく表示文字列を送る
+			const option = input.find("option[selected]").first();
+			const selected = option.length ? option : input.find("option").first();
+			fields[fieldName] = selected.attr("value") ?? selected.text().trim();
+			return;
+		}
+		const isCheckable = type === "checkbox" || type === "radio";
+		fields[fieldName] = input.attr("value") ?? (isCheckable ? "on" : "");
 	});
 	return client.post(`${PORTAL_ORIGIN}${search.action}`, {
 		...fields,
@@ -321,7 +327,7 @@ export function parseTable(html: string, selector: string): Table {
 		.toArray()
 		.map((th) => {
 			const header = text(th);
-			return header.includes("（非表示）") ? "" : header;
+			return header.endsWith("（非表示）") ? "" : header;
 		});
 	const rows = table
 		.find("tbody tr")
@@ -347,7 +353,8 @@ export function parseTable(html: string, selector: string): Table {
 /** 検索結果の表を変換する。該当なしの案内があれば0件として返し、どちらもなければ parseTable で失敗させる */
 function parseSearchResult(html: string, selector: string): Table {
 	const $ = cheerio.load(html);
-	if (!$(selector).length && $.text().includes(NO_DATA_MESSAGE)) {
+	// 案内文は結果の欄の .center に出る。ほかの場所の同じ文言で0件と誤認しない
+	if (!$(selector).length && $(".center").text().includes(NO_DATA_MESSAGE)) {
 		return { headers: [], rows: [] };
 	}
 	return parseTable(html, selector);

@@ -374,6 +374,31 @@ describe("searchMenu", () => {
 		expect(posts[0]?.body.has("studentCode")).toBe(false);
 	});
 
+	it("押していないボタンは送らず、値のない選択肢はブラウザと同じ値を送る", async () => {
+		const posts: RecordedPost[] = [];
+		const body = `<form name="classcontact_classContactActionForm">
+		  <input type="submit" name="clear" value="クリア">
+		  <input type="reset" name="reset" value="戻す">
+		  <input type="image" name="icon" value="画像">
+		  <input type="button" name="action" value="操作">
+		  <input type="checkbox" name="onlyTodo" checked>
+		  <select name="subjectDispCode"><option selected>心理学概論</option></select>
+		</form>`;
+
+		await searchMenu(
+			fakeSite(posts),
+			{ url: classContactsPage.url, body },
+			"class-contacts",
+			{ year: "2026", term: "1" },
+		);
+
+		for (const button of ["clear", "reset", "icon", "action"]) {
+			expect(posts[0]?.body.has(button)).toBe(false);
+		}
+		expect(posts[0]?.body.get("onlyTodo")).toBe("on");
+		expect(posts[0]?.body.get("subjectDispCode")).toBe("心理学概論");
+	});
+
 	it("試験時間割は授業区分も送る", async () => {
 		const posts: RecordedPost[] = [];
 
@@ -420,6 +445,24 @@ describe("検索結果の解析", () => {
 		expect(() =>
 			MENUS["class-contacts"].parse("<title>エラー画面</title>"),
 		).toThrow(expect.objectContaining({ code: "SITE_CHANGED" }));
+	});
+
+	it("結果の欄以外に同じ文言があるだけの画面は SITE_CHANGED で失敗する", () => {
+		const html =
+			"<p>該当がない場合は「表示するデータがありません」と表示します</p>";
+
+		expect(() => MENUS["class-contacts"].parse(html)).toThrow(
+			expect.objectContaining({ code: "SITE_CHANGED" }),
+		);
+	});
+
+	it("途中に「（非表示）」を含むだけの見出しは残す", () => {
+		const html = `<table id="searchResultList"><thead><tr><th>備考（非表示を含む）</th></tr></thead>
+		  <tbody><tr><td>振替あり</td></tr></tbody></table>`;
+
+		expect(MENUS["exam-timetable"].parse(html).headers).toEqual([
+			"備考（非表示を含む）",
+		]);
 	});
 
 	it("授業連絡の結果から、操作用と非表示の列を除く", () => {

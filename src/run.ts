@@ -50,10 +50,20 @@ const TABLE_OPTIONS = `オプション:
   --fields <列名,...>  出力する列名をカンマ区切りで指定します
   --limit <件数>       出力する行数の上限を1以上の整数で指定します
   --refresh            キャッシュを使わず取得します。必要なときだけ使ってください
-  --year <年度>        検索できる画面の開講年度を4桁で指定します
-  --term <1|2>         検索できる画面の開講学期を指定します。--year と一緒に指定します
-  --type <${Object.keys(LECTURE_CLASSES).join("|")}>  exam-timetable の授業区分を指定します
 `;
+
+const SEARCH_OPTIONS = `  --year <年度>        開講年度を20で始まる4桁で指定します
+  --term <1|2>         開講学期を指定します。--year と一緒に指定します
+`;
+const TYPE_OPTION = `  --type <${Object.keys(LECTURE_CLASSES).join("|")}>  授業区分を指定します
+`;
+
+/** 画面ごとに使えるオプションの説明を返す */
+function tableOptionsHelp(name: MenuName): string {
+	const search = menuSearch(name);
+	if (!search) return TABLE_OPTIONS;
+	return `${TABLE_OPTIONS}${SEARCH_OPTIONS}${search.lectureClassField ? TYPE_OPTION : ""}`;
+}
 
 /** MENUS から導いたコマンドの一覧。ヘルプの内容はここだけで管理する */
 const COMMANDS: Record<string, { description: string; access: string }> = {
@@ -91,6 +101,9 @@ function buildHelp(): string {
 ${commands}
 
 一覧のコマンド（${Object.keys(MENUS).join(", ")}）の${TABLE_OPTIONS}
+検索できるコマンド（class-contacts, exam-timetable）の追加のオプション:
+${SEARCH_OPTIONS}exam-timetable だけの追加のオプション:
+${TYPE_OPTION}
 守ること:
   - 読み取り専用です。申請、投稿、提出はできません。
   - サーバー負荷を避けるため、ループ、並列実行、定期実行、自動再試行をしないでください。
@@ -120,7 +133,7 @@ function buildCommandHelp(command: string): string {
 		? COMMANDS[command]
 		: undefined;
 	if (!entry) throw new OujError("USAGE", `未知のコマンドです: ${command}`);
-	const options = isMenuName(command) ? `\n${TABLE_OPTIONS}` : "";
+	const options = isMenuName(command) ? `\n${tableOptionsHelp(command)}` : "";
 	return `ouj ${command}: ${entry.description}\n通信: ${entry.access}\n${options}`;
 }
 
@@ -133,6 +146,15 @@ function requireEnv(env: Dependencies["env"], name: string): string {
 	if (!value) throw new OujError("AUTH", `環境変数 ${name} を設定してください`);
 	return value;
 }
+
+const TABLE_OPTION_NAMES = [
+	"fields",
+	"limit",
+	"refresh",
+	"year",
+	"term",
+	"type",
+] as const;
 
 function parseCommandLine(argv: string[]) {
 	try {
@@ -224,8 +246,11 @@ function parseSearchQuery(
 		}
 		return undefined;
 	}
-	if (year === undefined || !/^\d{4}$/.test(year)) {
-		throw new OujError("USAGE", "--year には4桁の年度を指定してください");
+	if (year === undefined || !/^20\d{2}$/.test(year)) {
+		throw new OujError(
+			"USAGE",
+			"--year には20で始まる4桁の年度を指定してください",
+		);
 	}
 	if (term !== "1" && term !== "2") {
 		throw new OujError("USAGE", "--term には 1 か 2 を指定してください");
@@ -323,13 +348,9 @@ async function execute(
 		throw new OujError("USAGE", "コマンドを1つ指定してください");
 	}
 	const isTableCommand = isMenuName(command);
-	const hasTableOption =
-		values.fields !== undefined ||
-		values.limit !== undefined ||
-		values.refresh !== undefined ||
-		values.year !== undefined ||
-		values.term !== undefined ||
-		values.type !== undefined;
+	const hasTableOption = TABLE_OPTION_NAMES.some(
+		(option) => values[option] !== undefined,
+	);
 	if (!isTableCommand && hasTableOption) {
 		throw new OujError(
 			"USAGE",

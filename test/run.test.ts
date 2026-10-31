@@ -277,6 +277,22 @@ describe("run", () => {
 			);
 		});
 
+		it("検索のない画面の --help に検索のオプションを表示しない", async () => {
+			await run(["grades", "--help"], dependencies);
+
+			expect(stdout.join("")).not.toContain("--year");
+		});
+
+		it("検索できる画面の --help に使えるオプションだけを表示する", async () => {
+			await run(["class-contacts", "--help"], dependencies);
+			expect(stdout.join("")).toContain("--year");
+			expect(stdout.join("")).not.toContain("--type");
+
+			stdout = [];
+			await run(["exam-timetable", "--help"], dependencies);
+			expect(stdout.join("")).toContain("--type");
+		});
+
 		it("同じ条件の再実行はキャッシュを使い、別の条件は別に取得する", async () => {
 			const firstTerm = ["exam-timetable", "--year", "2026", "--term", "1"];
 			await run(firstTerm, dependencies);
@@ -298,6 +314,10 @@ describe("run", () => {
 			["条件なしの exam-timetable", ["exam-timetable"]],
 			["学期だけの class-contacts", ["class-contacts", "--term", "1"]],
 			["4桁でない年度", ["exam-timetable", "--year", "26", "--term", "1"]],
+			[
+				"20で始まらない年度",
+				["exam-timetable", "--year", "1999", "--term", "1"],
+			],
 			["1と2以外の学期", ["exam-timetable", "--year", "2026", "--term", "3"]],
 			[
 				"未知の授業区分",
