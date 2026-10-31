@@ -27,7 +27,8 @@ export OUJ_PASSWORD="$(op item get 項目名 --vault 保管庫名 --fields passw
 node dist/cli.js grades       # 履修成績
 node dist/cli.js contacts     # 学内連絡の一覧
 node dist/cli.js files        # 授業共有ファイルの一覧
-node dist/cli.js doctor       # 接続と表の形式だけを確認（個人情報は出力しない）
+node dist/cli.js doctor       # 接続と学内連絡の表の形式だけを確認（個人情報は出力しない）
+node dist/cli.js doctor grades  # 確認する1画面を指定する
 node dist/cli.js --help       # コマンド、出力形式、終了コードを表示（通信しない）
 node dist/cli.js cache-clear  # 保存した一覧を消す（通信しない）
 ```

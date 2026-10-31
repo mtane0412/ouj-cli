@@ -30,7 +30,6 @@ interface Menu {
 	tableSelector: string;
 }
 
-/** 教務側の画面にはメニューフォームがなく次の画面へ進めないため、続けて開く doctor のために最後に置く */
 export const MENUS = {
 	contacts: {
 		description: "学内連絡の一覧を取得します",
@@ -156,6 +155,27 @@ export async function openMenu(
 		menuCode: menu.menuCode,
 		nextPath: menu.nextPath,
 	});
+}
+
+/**
+ * ログインして指定の1画面だけを開き、取得可否と表の形式を返す。
+ * 画面が増えても通信量が増えないよう、複数の画面は開かない。個人情報を出さないよう、行の中身は返さない。
+ */
+export async function checkMenu(
+	client: HttpClient,
+	credentials: Credentials,
+	name: MenuName,
+) {
+	const home = await login(client, credentials);
+	const page = await openMenu(client, home, name);
+	const { headers, rows } = parseTable(page.body, MENUS[name].tableSelector);
+	return {
+		login: "ok",
+		menu: name,
+		path: pathWithoutSession(page.url),
+		headers,
+		rowCount: rows.length,
+	};
 }
 
 /** 一覧表を、見出しをキーにした行データへ変換する */

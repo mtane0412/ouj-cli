@@ -116,6 +116,9 @@ describe("run", () => {
 			["空の --fields", ["grades", "--fields", ""]],
 			["doctor への --fields", ["doctor", "--fields", "科目名"]],
 			["廃止した describe", ["describe"]],
+			["doctor の未知の画面", ["doctor", "未知"]],
+			["doctor の複数の画面", ["doctor", "contacts", "grades"]],
+			["一覧のコマンドへの余分な引数", ["grades", "contacts"]],
 			["未知のコマンドの --help", ["未知", "--help"]],
 		])("%s は通信せず終了コード 2 を返す", async (_label, argv) => {
 			expect(await run(argv, dependencies)).toBe(2);
@@ -261,6 +264,28 @@ describe("run", () => {
 	});
 
 	describe("doctor", () => {
+		it("対象を省略すると代表の contacts だけを確認する", async () => {
+			await run(["doctor"], dependencies);
+
+			expect(doctor).toHaveBeenCalledTimes(1);
+			expect(doctor).toHaveBeenCalledWith(
+				{ username: "学生A", password: "秘密の文字列" },
+				"contacts",
+			);
+		});
+
+		it("指定した1画面を確認する", async () => {
+			expect(await run(["doctor", "grades"], dependencies)).toBe(0);
+
+			expect(doctor).toHaveBeenCalledWith(expect.anything(), "grades");
+		});
+
+		it("--help は1画面だけを開くことを示す", async () => {
+			await run(["doctor", "--help"], dependencies);
+
+			expect(stdout.join("")).toContain("1画面");
+		});
+
 		it("結果を保存せず、毎回ログイン間隔の制限を受ける", async () => {
 			expect(await run(["doctor"], dependencies)).toBe(0);
 			expect(output()).toEqual({ login: "ok" });
