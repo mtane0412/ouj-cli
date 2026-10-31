@@ -7,6 +7,7 @@ import { HttpClient } from "../src/http-client.js";
 import {
 	checkMenu,
 	fetchContact,
+	fetchFileDetail,
 	fetchSyllabus,
 	login,
 	MENUS,
@@ -959,6 +960,105 @@ describe("学内連絡", () => {
 				contactSite([], "<title>エラー画面</title>"),
 				credentials,
 				"6155",
+			),
+		).rejects.toMatchObject({ code: "SITE_CHANGED" });
+	});
+});
+
+describe("授業共有ファイル", () => {
+	const row = (index: number, title: string) =>
+		`<tr><td>科目</td><td><a onclick="return showClassFileDetail(${index});">${title}<input type="hidden" name="linkDetailIndex" value="${index}"/></a></td></tr>`;
+	const listPage = `<title>授業共有ファイル</title>
+	  <form name="classfile_classFileActionForm"><input type="hidden" name="taglib.html.TOKEN" value="一覧トークン">
+	  <table id="tbl_classFile"><thead><tr><th>授業科目</th><th>タイトル</th></tr></thead>
+	  <tbody>${row(0, "復習用スライド")}${row(1, "演習問題")}</tbody></table></form>`;
+	const detailPage = `<title>授業共有ファイル詳細</title><div class="ttb_entry">
+	  <div class="row"><div class="th">タイトル</div><div class="td">復習用スライド</div></div>
+	  <div class="row"><div class="th">ファイル</div><div class="td">
+	    <div id="fileList_CLASS_FILE_FILE"><div><a onclick="fileDownLoad('CLASS_FILE_FILE', '1', '第1回.pdf');">第1回.pdf</a> (768.78 KB)</div></div>
+	    <div id="fileListAllDownload_CLASS_FILE_FILE"><a onclick="allFileDownload('CLASS_FILE_FILE');">一括ダウンロード</a></div>
+	  </div></div>
+	  <div class="row"><div class="th">公開期間</div><div class="td">2019/10/13 ～ 2038/12/31</div></div>
+	</div>`;
+
+	function fileSite(posts: RecordedPost[], detail = detailPage) {
+		return new HttpClient(async (input, init) => {
+			const url = String(input);
+			if (init?.method === "POST") {
+				posts.push({ url, body: new URLSearchParams(String(init.body)) });
+				if (url.endsWith("/login/preLogin/preLogin")) return new Response("{}");
+				if (url.endsWith("/portal/sso/")) {
+					return new Response(null, {
+						status: 302,
+						headers: { location: CAS_URL },
+					});
+				}
+				if (url.includes("/cas/login")) {
+					return new Response(null, {
+						status: 302,
+						headers: { location: HOME_URL },
+					});
+				}
+				if (url.includes("showClassFileDetail")) return new Response(detail);
+				return new Response(listPage);
+			}
+			if (url === PORTAL_URL) return new Response(PORTAL_PAGE);
+			return new Response(url.includes("/cas/login") ? CAS_PAGE : HOME_PAGE);
+		});
+	}
+
+	it("一覧の各行に、詳細の取得に使う番号をつける", () => {
+		expect(MENUS.files.parse(listPage).rows).toEqual([
+			{ 授業科目: "科目", タイトル: "復習用スライド", 番号: "0" },
+			{ 授業科目: "科目", タイトル: "演習問題", 番号: "1" },
+		]);
+	});
+
+	it("指定の1件の詳細だけを開き、ファイルの一括ダウンロードの文言を除く", async () => {
+		const posts: RecordedPost[] = [];
+
+		const table = await fetchFileDetail(fileSite(posts), credentials, "1");
+
+		const detailPosts = posts.filter(({ url }) =>
+			url.includes("showClassFileDetail"),
+		);
+		expect(detailPosts).toHaveLength(1);
+		expect(detailPosts[0]?.url).toBe(
+			"https://www.wakaba.ouj.ac.jp/portal/classfile/classFile/showClassFileDetail/1",
+		);
+		expect(detailPosts[0]?.body.get("taglib.html.TOKEN")).toBe("一覧トークン");
+		expect(table.rows).toEqual([
+			{ 項目: "タイトル", 内容: "復習用スライド" },
+			{ 項目: "ファイル", 内容: "第1回.pdf (768.78 KB)" },
+			{ 項目: "公開期間", 内容: "2019/10/13 ～ 2038/12/31" },
+		]);
+	});
+
+	it("ファイル本体へは通信しない", async () => {
+		const posts: RecordedPost[] = [];
+
+		await fetchFileDetail(fileSite(posts), credentials, "0");
+
+		expect(posts.some(({ url }) => /fileDownLoad/i.test(url))).toBe(false);
+	});
+
+	it("一覧にない番号は詳細を開かず USAGE で失敗する", async () => {
+		const posts: RecordedPost[] = [];
+
+		await expect(
+			fetchFileDetail(fileSite(posts), credentials, "9"),
+		).rejects.toMatchObject({ code: "USAGE" });
+		expect(posts.some(({ url }) => url.includes("showClassFileDetail"))).toBe(
+			false,
+		);
+	});
+
+	it("詳細画面の形式が違えば SITE_CHANGED で失敗する", async () => {
+		await expect(
+			fetchFileDetail(
+				fileSite([], "<title>エラー画面</title>"),
+				credentials,
+				"0",
 			),
 		).rejects.toMatchObject({ code: "SITE_CHANGED" });
 	});

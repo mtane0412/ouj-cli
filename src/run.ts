@@ -31,6 +31,11 @@ export interface Dependencies {
 		name: MenuName,
 		query: SearchQuery | undefined,
 	) => Promise<StoredTable>;
+	/** ログインして授業共有ファイルの詳細を1件だけ取得する */
+	fetchFileDetail: (
+		credentials: Credentials,
+		index: string,
+	) => Promise<StoredTable>;
 	/** ログインして学内連絡の本文を1件だけ取得する */
 	fetchContact: (credentials: Credentials, id: string) => Promise<StoredTable>;
 	/** ログインしてシラバスを1科目だけ取得する */
@@ -104,6 +109,12 @@ const COMMANDS: Record<string, { description: string; access: string }> = {
 			"学内連絡の本文を1件だけ取得します。--id に contacts の連絡IDを指定します",
 		access: `有効なキャッシュがあれば通信しません。なければログインし、一覧と詳細の2画面を開きます。${CONTACT_READ_NOTE}`,
 	},
+	file: {
+		description:
+			"授業共有ファイルの詳細を1件だけ取得します。--id に files の番号を指定します。ファイル本体は取得しません",
+		access:
+			"有効なキャッシュがあれば通信しません。なければログインし、一覧と詳細の2画面を開きます。",
+	},
 	"cache-clear": {
 		description: "保存した一覧を消します",
 		access: "通信しません。",
@@ -131,6 +142,8 @@ ${commands}
 検索できるコマンド（class-contacts, exam-timetable）の追加のオプション:
 ${SEARCH_OPTIONS}exam-timetable だけの追加のオプション:
 ${TYPE_OPTION}
+file は --id で files の番号を指定します（一覧のオプションも使えます）。ファイル本体は取得しません。
+
 contact は --id で読む連絡を指定します（一覧のオプションも使えます）。${CONTACT_READ_NOTE}
 
 syllabus は --year、--term に加えて次のオプションを指定します（一覧のオプションも使えます）:
@@ -168,9 +181,11 @@ function buildCommandHelp(command: string): string {
 		? `\n${tableOptionsHelp(command)}`
 		: command === "syllabus"
 			? `\n${TABLE_OPTIONS}${SEARCH_OPTIONS}${SYLLABUS_OPTIONS}`
-			: command === "contact"
-				? `\n${TABLE_OPTIONS}  --id <連絡ID>        contacts の結果の連絡IDを指定します\n`
-				: "";
+			: command === "file"
+				? `\n${TABLE_OPTIONS}  --id <番号>          files の結果の番号を指定します\n`
+				: command === "contact"
+					? `\n${TABLE_OPTIONS}  --id <連絡ID>        contacts の結果の連絡IDを指定します\n`
+					: "";
 	return `ouj ${command}: ${entry.description}\n通信: ${entry.access}\n${options}`;
 }
 
@@ -437,6 +452,22 @@ async function runContact(
 	);
 }
 
+async function runFileDetail(
+	values: ReturnType<typeof parseCommandLine>["values"],
+	dependencies: Dependencies,
+): Promise<unknown> {
+	const { id, year, term, type, name, code } = values;
+	if ([year, term, type, name, code].some((value) => value !== undefined)) {
+		throw new OujError("USAGE", "file に指定できる条件は --id だけです");
+	}
+	if (id === undefined || !/^\d+$/.test(id)) {
+		throw new OujError("USAGE", "--id には数字の番号を指定してください");
+	}
+	return outputTable(`file-${id}`, values, dependencies, (credentials) =>
+		dependencies.fetchFileDetail(credentials, id),
+	);
+}
+
 async function runDoctor(
 	target: string | undefined,
 	dependencies: Dependencies,
@@ -475,7 +506,10 @@ async function execute(
 		throw new OujError("USAGE", "コマンドを1つ指定してください");
 	}
 	const isTableCommand =
-		isMenuName(command) || command === "syllabus" || command === "contact";
+		isMenuName(command) ||
+		command === "syllabus" ||
+		command === "contact" ||
+		command === "file";
 	const hasTableOption = TABLE_OPTION_NAMES.some(
 		(option) => values[option] !== undefined,
 	);
@@ -494,6 +528,8 @@ async function execute(
 		result = await runTableCommand(command, values, dependencies);
 	} else if (command === "syllabus") {
 		result = await runSyllabus(values, dependencies);
+	} else if (command === "file") {
+		result = await runFileDetail(values, dependencies);
 	} else if (command === "contact") {
 		result = await runContact(values, dependencies);
 	} else if (command === "doctor") {
