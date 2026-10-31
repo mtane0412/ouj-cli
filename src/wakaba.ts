@@ -62,7 +62,7 @@ export const LECTURE_CLASSES: Record<string, string> = {
 
 export const MENUS = {
 	contacts: {
-		description: "学内連絡の一覧を取得します",
+		description: "未読の学内連絡の一覧を取得します",
 		menuCode: "B0201",
 		nextPath: "/commoncontact/commonContact/initialize",
 		external: false,
@@ -739,7 +739,7 @@ export async function fetchContact(
 	if (!link) {
 		throw new OujError(
 			"USAGE",
-			`連絡ID ${id} は学内連絡の一覧にありません。\`ouj contacts\` で確認してください`,
+			`連絡ID ${id} は未読の学内連絡の一覧にありません。既読の連絡は開けません。\`ouj contacts\` で確認してください`,
 		);
 	}
 	const [, commonContactId, selectIndex, mode, commonContactKindDivision] =

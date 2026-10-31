@@ -56,7 +56,8 @@ function doctorMenus(): MenuName[] {
 
 const TABLE_ACCESS =
 	"有効なキャッシュがあれば通信しません。なければログインします。";
-const CONTACT_READ_NOTE = "詳細を開くと、その連絡は未読から既読に変わります。";
+const CONTACT_READ_NOTE =
+	"詳細を開くと、その連絡は未読から既読に変わり、contacts の一覧から消えます。既読の連絡は、取得から1時間のキャッシュでだけ読めます。";
 const TABLE_OPTIONS = `オプション:
   --fields <列名,...>  出力する列名をカンマ区切りで指定します
   --limit <件数>       出力する行数の上限を1以上の整数で指定します
