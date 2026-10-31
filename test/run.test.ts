@@ -1,0 +1,283 @@
+/**
+ * コマンド処理 run のテスト。
+ * サイトへの通信は差し替え、出力形式、終了コード、キャッシュと連続ログイン拒否の連携を検証する。
+ */
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { OujError } from "../src/errors.js";
+import {
+	CACHE_TTL_MS,
+	LOGIN_INTERVAL_MS,
+	LocalStore,
+} from "../src/local-store.js";
+import { type Dependencies, run } from "../src/run.js";
+
+const START = Date.parse("2026-10-31T00:00:00.000Z");
+const gradesTable = {
+	headers: ["科目名", "成績"],
+	rows: [
+		{ 科目名: "心理学概論", 成績: "◎" },
+		{ 科目名: "統計学入門", 成績: "○" },
+	],
+};
+
+describe("run", () => {
+	let dir: string;
+	let currentTime: number;
+	let stdout: string[];
+	let stderr: string[];
+	let dependencies: Dependencies;
+	let fetchTable: ReturnType<typeof vi.fn<Dependencies["fetchTable"]>>;
+	let doctor: ReturnType<typeof vi.fn<Dependencies["doctor"]>>;
+
+	/** 標準エラーへ書かれた JSON のエラーを取り出す */
+	const errorOutput = () => JSON.parse(stderr.join("")).error;
+	const output = () => JSON.parse(stdout.join(""));
+
+	beforeEach(async () => {
+		dir = await mkdtemp(join(tmpdir(), "ouj-run-"));
+		currentTime = START;
+		stdout = [];
+		stderr = [];
+		fetchTable = vi.fn<Dependencies["fetchTable"]>(async () => gradesTable);
+		doctor = vi.fn<Dependencies["doctor"]>(async () => ({ login: "ok" }));
+		dependencies = {
+			env: { OUJ_USERNAME: "学生A", OUJ_PASSWORD: "秘密の文字列" },
+			store: new LocalStore(dir, () => currentTime),
+			fetchTable,
+			doctor,
+			stdout: (text) => stdout.push(text),
+			stderr: (text) => stderr.push(text),
+		};
+	});
+
+	afterEach(async () => {
+		await rm(dir, { recursive: true, force: true });
+	});
+
+	describe("通信しないコマンド", () => {
+		it("--help は認証情報なしで全コマンド、制限、終了コードを表示する", async () => {
+			dependencies.env = {};
+
+			expect(await run(["--help"], dependencies)).toBe(0);
+
+			const help = stdout.join("");
+			for (const command of [
+				"grades",
+				"contacts",
+				"files",
+				"doctor",
+				"cache-clear",
+			]) {
+				expect(help).toContain(command);
+			}
+			expect(help).toContain("AUTH: 4");
+			expect(help).toContain("60秒");
+			expect(help).toContain("OUJ_PASSWORD");
+			expect(fetchTable).not.toHaveBeenCalled();
+		});
+
+		it("一覧のコマンドの --help は通信せず、指定できるオプションを表示する", async () => {
+			dependencies.env = {};
+
+			expect(await run(["grades", "--help"], dependencies)).toBe(0);
+
+			expect(stdout.join("")).toContain("--fields");
+			expect(fetchTable).not.toHaveBeenCalled();
+		});
+
+		it("一覧以外のコマンドの --help に一覧用のオプションを表示しない", async () => {
+			expect(await run(["doctor", "--help"], dependencies)).toBe(0);
+
+			expect(stdout.join("")).not.toContain("--fields");
+			expect(doctor).not.toHaveBeenCalled();
+		});
+
+		it("cache-clear は保存した一覧を消す", async () => {
+			await run(["grades"], dependencies);
+			currentTime += LOGIN_INTERVAL_MS;
+
+			expect(await run(["cache-clear"], dependencies)).toBe(0);
+			await run(["grades"], dependencies);
+
+			expect(fetchTable).toHaveBeenCalledTimes(2);
+		});
+	});
+
+	describe("引数の誤り", () => {
+		it.each([
+			["コマンドなし", []],
+			["未知のコマンド", ["未知"]],
+			["未知のオプション", ["grades", "--未知"]],
+			["0件の --limit", ["grades", "--limit", "0"]],
+			["数値でない --limit", ["grades", "--limit", "多数"]],
+			["空の --fields", ["grades", "--fields", ""]],
+			["doctor への --fields", ["doctor", "--fields", "科目名"]],
+			["廃止した describe", ["describe"]],
+			["未知のコマンドの --help", ["未知", "--help"]],
+		])("%s は通信せず終了コード 2 を返す", async (_label, argv) => {
+			expect(await run(argv, dependencies)).toBe(2);
+
+			expect(errorOutput().code).toBe("USAGE");
+			expect(errorOutput().hint).toContain("ouj --help");
+			expect(fetchTable).not.toHaveBeenCalled();
+			expect(doctor).not.toHaveBeenCalled();
+		});
+
+		it("認証情報がなければログイン枠を消費せずに終了コード 4 を返す", async () => {
+			dependencies.env = { OUJ_USERNAME: "学生A" };
+
+			expect(await run(["grades"], dependencies)).toBe(4);
+
+			expect(errorOutput().code).toBe("AUTH");
+			dependencies.env = {
+				OUJ_USERNAME: "学生A",
+				OUJ_PASSWORD: "秘密の文字列",
+			};
+			expect(await run(["grades"], dependencies)).toBe(0);
+		});
+	});
+
+	describe("一覧の取得", () => {
+		it("取得結果を、取得元と全列名つきで標準出力へ書く", async () => {
+			expect(await run(["grades"], dependencies)).toBe(0);
+
+			expect(fetchTable).toHaveBeenCalledWith(
+				{ username: "学生A", password: "秘密の文字列" },
+				"grades",
+			);
+			expect(output()).toEqual({
+				source: "network",
+				fetchedAt: "2026-10-31T00:00:00.000Z",
+				fields: ["科目名", "成績"],
+				total: 2,
+				rows: gradesTable.rows,
+			});
+		});
+
+		it("有効期限内の再実行は通信せず、パスワードも要求しない", async () => {
+			await run(["grades"], dependencies);
+			stdout = [];
+			dependencies.env = { OUJ_USERNAME: "学生A" };
+
+			expect(await run(["grades"], dependencies)).toBe(0);
+
+			expect(fetchTable).toHaveBeenCalledTimes(1);
+			expect(output().source).toBe("cache");
+			expect(output().fetchedAt).toBe("2026-10-31T00:00:00.000Z");
+		});
+
+		it("--fields と --limit は全列名と総件数を変えずに結果だけを絞る", async () => {
+			await run(["grades", "--fields", "成績", "--limit", "1"], dependencies);
+
+			expect(output()).toMatchObject({
+				fields: ["科目名", "成績"],
+				total: 2,
+				rows: [{ 成績: "◎" }],
+			});
+		});
+
+		it("存在しない列名は列名の一覧を示し、取得済みの結果を再利用できる", async () => {
+			expect(await run(["grades", "--fields", "点数"], dependencies)).toBe(2);
+			expect(errorOutput().message).toContain("科目名");
+
+			expect(await run(["grades", "--fields", "成績"], dependencies)).toBe(0);
+			expect(fetchTable).toHaveBeenCalledTimes(1);
+		});
+
+		it("--refresh は有効期限内でも取得し直すが、連続ログインの拒否は受ける", async () => {
+			await run(["grades"], dependencies);
+
+			expect(await run(["grades", "--refresh"], dependencies)).toBe(7);
+			expect(errorOutput().code).toBe("COOLDOWN");
+			expect(errorOutput().retryAfterSeconds).toBe(60);
+			expect(fetchTable).toHaveBeenCalledTimes(1);
+
+			stderr = [];
+			currentTime += LOGIN_INTERVAL_MS;
+			expect(await run(["grades", "--refresh"], dependencies)).toBe(0);
+			expect(fetchTable).toHaveBeenCalledTimes(2);
+		});
+
+		it("別の画面の連続取得はログイン間隔を過ぎるまで拒否する", async () => {
+			await run(["grades"], dependencies);
+
+			expect(await run(["contacts"], dependencies)).toBe(7);
+
+			expect(fetchTable).toHaveBeenCalledTimes(1);
+		});
+
+		it("失敗した結果は保存せず、再試行もログイン間隔を待たせる", async () => {
+			fetchTable.mockRejectedValueOnce(new OujError("AUTH", "ログインに失敗"));
+
+			expect(await run(["grades"], dependencies)).toBe(4);
+			expect(errorOutput()).toMatchObject({
+				code: "AUTH",
+				message: "ログインに失敗",
+			});
+			expect(errorOutput().hint).toBeTruthy();
+
+			stderr = [];
+			expect(await run(["grades"], dependencies)).toBe(7);
+			expect(fetchTable).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	describe("期限切れの一覧の削除", () => {
+		const storedFiles = () => readdir(join(dir, "data"));
+
+		it("別の画面のコマンドが失敗しても、期限切れの一覧をディスクから消す", async () => {
+			// 前提: grades の一覧を保存してから有効期限が過ぎている
+			await run(["grades"], dependencies);
+			expect(await storedFiles()).toHaveLength(1);
+			currentTime += CACHE_TTL_MS;
+			dependencies.env = { OUJ_USERNAME: "学生A" };
+
+			// パスワードがないため contacts の取得自体は失敗する
+			expect(await run(["contacts"], dependencies)).toBe(4);
+
+			expect(await storedFiles()).toEqual([]);
+		});
+
+		it("有効期限内の一覧は消さない", async () => {
+			await run(["grades"], dependencies);
+			currentTime += CACHE_TTL_MS - 1;
+
+			await run(["grades"], dependencies);
+
+			expect(await storedFiles()).toHaveLength(1);
+		});
+
+		it("--help では保存データに触れない", async () => {
+			await run(["grades"], dependencies);
+			currentTime += CACHE_TTL_MS;
+
+			await run(["--help"], dependencies);
+
+			expect(await storedFiles()).toHaveLength(1);
+		});
+	});
+
+	describe("doctor", () => {
+		it("結果を保存せず、毎回ログイン間隔の制限を受ける", async () => {
+			expect(await run(["doctor"], dependencies)).toBe(0);
+			expect(output()).toEqual({ login: "ok" });
+
+			expect(await run(["doctor"], dependencies)).toBe(7);
+			expect(doctor).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	it("想定外の例外は終了コード 1 で JSON のエラーにする", async () => {
+		fetchTable.mockRejectedValueOnce(new Error("想定外の失敗"));
+
+		expect(await run(["grades"], dependencies)).toBe(1);
+
+		expect(errorOutput()).toMatchObject({
+			code: "UNEXPECTED",
+			message: "想定外の失敗",
+		});
+	});
+});

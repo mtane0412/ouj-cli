@@ -38,6 +38,41 @@ describe("HttpClient", () => {
 		});
 	});
 
+	it("接続に失敗したらパスだけを含む NETWORK エラーにする", async () => {
+		const client = new HttpClient(async () => {
+			throw new TypeError("fetch failed");
+		});
+
+		const error = await client
+			.get("https://example.test/画面;jsessionid=秘密?ticket=秘密")
+			.catch((caught: unknown) => caught);
+
+		expect(error).toMatchObject({ code: "NETWORK" });
+		expect(String(error)).not.toContain("秘密");
+	});
+
+	it("HTTP エラーは NETWORK エラーにする", async () => {
+		const client = new HttpClient(
+			async () => new Response(null, { status: 503 }),
+		);
+
+		await expect(client.get("https://example.test/画面")).rejects.toMatchObject(
+			{ code: "NETWORK" },
+		);
+	});
+
+	it("応答を待ち続けないよう fetch に中断シグナルを渡す", async () => {
+		let signal: AbortSignal | null | undefined;
+		const client = new HttpClient(async (_input, init) => {
+			signal = init?.signal;
+			return new Response("到着しました");
+		});
+
+		await client.get("https://example.test/画面");
+
+		expect(signal).toBeInstanceOf(AbortSignal);
+	});
+
 	it("トレースには名前だけを記録し、値を含めない", async () => {
 		const traces: string[] = [];
 		const client = new HttpClient(

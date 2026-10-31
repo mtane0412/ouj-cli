@@ -4,8 +4,11 @@
  * fetch の自動リダイレクトを使わず 1 段ずつ処理する。
  */
 import { CookieJar } from "tough-cookie";
+import { OujError } from "./errors.js";
 
 const MAX_REDIRECTS = 10;
+/** 応答がないまま待ち続けないための、1 回の要求あたりの上限 */
+const REQUEST_TIMEOUT_MS = 30_000;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const METHOD_PRESERVING_STATUSES = new Set([307, 308]);
 
@@ -40,6 +43,15 @@ function cookieNames(cookieHeader: string): string {
 		.filter(Boolean)
 		.map((cookie) => cookie.split("=")[0])
 		.join(",");
+}
+
+/** URL にはチケットやトークンが含まれるため、エラーにはパスだけを出す */
+function networkError(url: string, reason: unknown): OujError {
+	const name = reason instanceof Error ? reason.name : String(reason);
+	return new OujError(
+		"NETWORK",
+		`通信に失敗しました（${name}）: ${pathWithoutSession(url)}`,
+	);
 }
 
 export interface Page {
@@ -89,11 +101,14 @@ export class HttpClient {
 			const response = await this.fetchImpl(url, {
 				...init,
 				redirect: "manual",
+				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 				headers: {
 					...init.headers,
 					...(cookie ? { cookie } : {}),
 					...(referer ? { referer } : {}),
 				},
+			}).catch((error: unknown) => {
+				throw networkError(url, error);
 			});
 			this.trace(
 				`${init.method} ${describeUrl(url)} -> ${response.status} cookie送信=[${cookieNames(cookie)}] cookie受信=[${response.headers
@@ -117,11 +132,16 @@ export class HttpClient {
 				continue;
 			}
 			if (!response.ok) {
-				// URL にはチケットやトークンが含まれるため、エラーにはパスだけを出す
-				throw new Error(`HTTP ${response.status}: ${pathWithoutSession(url)}`);
+				throw networkError(url, `HTTP ${response.status}`);
 			}
-			return { url, body: await response.text() };
+			const body = await response.text().catch((error: unknown) => {
+				throw networkError(url, error);
+			});
+			return { url, body };
 		}
-		throw new Error(`リダイレクトが ${MAX_REDIRECTS} 回を超えました`);
+		throw new OujError(
+			"NETWORK",
+			`リダイレクトが ${MAX_REDIRECTS} 回を超えました`,
+		);
 	}
 }
