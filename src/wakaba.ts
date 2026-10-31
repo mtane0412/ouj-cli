@@ -657,6 +657,7 @@ const CONTACT_ID_HEADER = "連絡ID";
 /** 一覧のリンクが詳細画面へ渡す引数（連絡ID、行番号、画面の種類、連絡の区分） */
 const CONTACT_LINK = /dtlScreen\('(\d+)',\s*'(\d+)',\s*'(\w+)',\s*'(\d+)'\)/;
 
+const LINE_BREAK_MARK = "\u0001";
 const EXTERNAL_LINK = /^(https?:|mailto:)/i;
 
 /** 学内連絡の一覧を変換し、本文の取得に使う連絡IDを各行に加える */
@@ -699,12 +700,14 @@ function richText(
 			$(link).append(`（${href}）`);
 		}
 	});
+	copy.find("script, style").remove();
 	copy.find("td, th").append(" ");
-	copy.find("br").replaceWith("\n");
-	copy.find("p, li, div, tr").append("\n");
+	// HTML ソース上の改行は空白として扱い、段落の区切りだけを改行にする
+	copy.find("br").replaceWith(LINE_BREAK_MARK);
+	copy.find("p, li, div, tr").append(LINE_BREAK_MARK);
 	return copy
 		.text()
-		.split("\n")
+		.split(LINE_BREAK_MARK)
 		.map((line) => line.replace(/\s+/g, " ").trim())
 		.filter(Boolean)
 		.join("\n");

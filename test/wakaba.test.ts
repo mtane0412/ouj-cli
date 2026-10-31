@@ -975,7 +975,8 @@ describe("授業共有ファイル", () => {
 	const detailPage = `<title>授業共有ファイル詳細</title><div class="ttb_entry">
 	  <div class="row"><div class="th">タイトル</div><div class="td">復習用スライド</div></div>
 	  <div class="row"><div class="th">ファイル</div><div class="td">
-	    <div id="fileList_CLASS_FILE_FILE"><div><a onclick="fileDownLoad('CLASS_FILE_FILE', '1', '第1回.pdf');">第1回.pdf</a> (768.78 KB)</div></div>
+	    <div id="fileList_CLASS_FILE_FILE"><div><a onclick="fileDownLoad('CLASS_FILE_FILE', '1', '第1回.pdf');">第1回.pdf</a>
+	      (768.78 KB)</div></div><script>function refreshFileList() {}</script>
 	    <div id="fileListAllDownload_CLASS_FILE_FILE"><a onclick="allFileDownload('CLASS_FILE_FILE');">一括ダウンロード</a></div>
 	  </div></div>
 	  <div class="row"><div class="th">公開期間</div><div class="td">2019/10/13 ～ 2038/12/31</div></div>
