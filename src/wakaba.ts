@@ -33,21 +33,21 @@ interface Menu {
 /** 教務側の画面にはメニューフォームがなく次の画面へ進めないため、続けて開く doctor のために最後に置く */
 export const MENUS = {
 	contacts: {
-		description: "学内連絡の一覧を取得する",
+		description: "学内連絡の一覧を取得します",
 		menuCode: "B0201",
 		nextPath: "/commoncontact/commonContact/initialize",
 		external: false,
 		tableSelector: "#tbl_commoncontact_rcv",
 	},
 	files: {
-		description: "授業共有ファイルの一覧を取得する",
+		description: "授業共有ファイルの一覧を取得します",
 		menuCode: "A0204",
 		nextPath: "/classfile/classFile/initialize",
 		external: false,
 		tableSelector: "#tbl_classFile",
 	},
 	grades: {
-		description: "履修成績を取得する",
+		description: "履修成績を取得します",
 		menuCode: "N0213",
 		nextPath: "/SC02080301003/initialize",
 		external: true,
