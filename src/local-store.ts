@@ -2,6 +2,7 @@
  * サーバーへのログイン回数を減らすために、手元に保存する状態を管理する。
  * - data/: 取得した一覧のキャッシュ。個人情報を含むため所有者だけが読める権限で保存する
  * - last-login: 最後にログインを始めた時刻。連続ログインを通信の前に拒否するために使う
+ * - last-login.lock: 時刻の確認と更新を同時に行わないためのロック
  * セッションや認証情報は保存しない。
  */
 import { createHash, randomUUID } from "node:crypto";
@@ -24,6 +25,7 @@ export const LOGIN_INTERVAL_MS = 60 * 1000;
 const OWNER_ONLY_DIRECTORY = 0o700;
 const OWNER_ONLY_FILE = 0o600;
 const ACCOUNT_KEY_LENGTH = 16;
+const MS_PER_SECOND = 1000;
 
 export interface StoredTable {
 	headers: string[];
@@ -85,6 +87,7 @@ async function readIfExists(path: string): Promise<string | undefined> {
 export class LocalStore {
 	private readonly dataDir: string;
 	private readonly lastLoginPath: string;
+	private readonly lockPath: string;
 
 	/**
 	 * @param dir 保存先のディレクトリ
@@ -96,6 +99,7 @@ export class LocalStore {
 	) {
 		this.dataDir = join(dir, "data");
 		this.lastLoginPath = join(dir, "last-login");
+		this.lockPath = join(dir, "last-login.lock");
 	}
 
 	/** ファイル名からログインIDが分からないよう、ハッシュで区別する */
@@ -175,40 +179,68 @@ export class LocalStore {
 		await rm(this.dataDir, { recursive: true, force: true });
 	}
 
-	/** ログインしてよければ時刻を記録する。間隔内なら COOLDOWN エラーにする */
+	/**
+	 * ログインしてよければ時刻を記録する。間隔内なら COOLDOWN エラーにする。
+	 * 時刻の確認から更新までをロックで保護し、同時に実行しても1つだけを通す。
+	 */
 	async acquireLoginSlot(): Promise<void> {
 		await mkdir(this.dir, { recursive: true, mode: OWNER_ONLY_DIRECTORY });
-		if (await this.tryRecordLogin()) return;
+		const timestamp = new Date(this.now()).toISOString();
+		if (!(await this.tryCreateLock(timestamp))) {
+			return this.rejectWhileLocked();
+		}
+		try {
+			const lastLogin = await readIfExists(this.lastLoginPath);
+			if (lastLogin !== undefined) this.assertLoginAllowed(lastLogin);
+			await this.writeOwnerOnlyFile(this.lastLoginPath, timestamp);
+		} finally {
+			await unlink(this.lockPath);
+		}
+	}
 
-		const lastLogin = Date.parse(await readFile(this.lastLoginPath, "utf8"));
-		if (Number.isNaN(lastLogin)) {
+	private assertLoginAllowed(lastLogin: string): void {
+		const startedAt = Date.parse(lastLogin);
+		if (Number.isNaN(startedAt)) {
 			throw new OujError("CACHE_CORRUPT", "last-login の内容が壊れています");
 		}
-		const remaining = lastLogin + LOGIN_INTERVAL_MS - this.now();
-		if (remaining <= 0) {
-			await unlink(this.lastLoginPath);
-			if (await this.tryRecordLogin()) return;
-			return this.acquireLoginSlot();
+		const remaining = startedAt + LOGIN_INTERVAL_MS - this.now();
+		if (remaining > 0) {
+			throw new OujError(
+				"COOLDOWN",
+				"前回のログインから間もないため、実行を取りやめました（通信はしていません）",
+				Math.ceil(remaining / MS_PER_SECOND),
+			);
 		}
-		throw new OujError(
-			"COOLDOWN",
-			"前回のログインから間もないため、実行を取りやめました（通信はしていません）",
-			Math.ceil(remaining / 1000),
-		);
 	}
 
 	/**
-	 * 時刻ファイルがなければ作成し、作成できたかを返す。
+	 * ロックが取れなかったときの結果を決める。
+	 * 古いロックは異常終了の跡だが、自動で消すと同時実行の保護が崩れるため、利用者の確認に任せる。
+	 */
+	private async rejectWhileLocked(): Promise<void> {
+		const lock = await readIfExists(this.lockPath);
+		// 確認する間に解放された場合は、改めて時刻を確認する
+		if (lock === undefined) return this.acquireLoginSlot();
+		const lockedAt = Date.parse(lock);
+		if (Number.isNaN(lockedAt) || this.now() - lockedAt >= LOGIN_INTERVAL_MS) {
+			throw new OujError(
+				"CACHE_CORRUPT",
+				"last-login.lock が残っています。他に ouj が動いていなければ削除してください",
+			);
+		}
+		this.assertLoginAllowed(lock);
+	}
+
+	/**
+	 * ロックファイルを作成し、作成できたかを返す。
 	 * link は既存ファイルがあると失敗するため、同時に実行しても1つだけが成功し、
 	 * 書きかけの内容を他のプロセスに読まれることもない。
 	 */
-	private async tryRecordLogin(): Promise<boolean> {
+	private async tryCreateLock(timestamp: string): Promise<boolean> {
 		const temporaryPath = join(this.dir, `.${randomUUID()}.tmp`);
-		await writeFile(temporaryPath, new Date(this.now()).toISOString(), {
-			mode: OWNER_ONLY_FILE,
-		});
+		await writeFile(temporaryPath, timestamp, { mode: OWNER_ONLY_FILE });
 		try {
-			await link(temporaryPath, this.lastLoginPath);
+			await link(temporaryPath, this.lockPath);
 			return true;
 		} catch (error) {
 			if (hasErrorCode(error, "EEXIST")) return false;
@@ -216,5 +248,15 @@ export class LocalStore {
 		} finally {
 			await unlink(temporaryPath);
 		}
+	}
+
+	/** 途中で失敗しても壊れたファイルを残さないよう、一時ファイルから置き換える */
+	private async writeOwnerOnlyFile(
+		path: string,
+		content: string,
+	): Promise<void> {
+		const temporaryPath = join(this.dir, `.${randomUUID()}.tmp`);
+		await writeFile(temporaryPath, content, { mode: OWNER_ONLY_FILE });
+		await rename(temporaryPath, path);
 	}
 }

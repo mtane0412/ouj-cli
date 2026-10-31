@@ -26,7 +26,7 @@ const HINTS: Record<ErrorCode, string> = {
 	COOLDOWN:
 		"サーバー負荷を避けるための制限です。繰り返し実行せず、必要な場合だけ retryAfterSeconds 秒以上待ってから1回実行してください。",
 	CACHE_CORRUPT:
-		"`ouj cache-clear` で保存データを消してください。last-login が原因の場合は、利用者にファイルの確認を依頼してください。",
+		"`ouj cache-clear` で保存データを消してください。last-login または last-login.lock が原因の場合は、利用者にファイルの確認を依頼してください。",
 };
 
 export class OujError extends Error {

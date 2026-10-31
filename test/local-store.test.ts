@@ -173,6 +173,46 @@ describe("LocalStore", () => {
 			expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
 		});
 
+		it("前回のログインが期限切れの状態で同時に実行しても1つだけがログインできる", async () => {
+			await store.acquireLoginSlot();
+			currentTime = START + LOGIN_INTERVAL_MS;
+
+			const results = await Promise.allSettled(
+				Array.from({ length: 10 }, () => store.acquireLoginSlot()),
+			);
+
+			expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+		});
+
+		it("他のプロセスがロック中なら通信させず COOLDOWN にする", async () => {
+			await writeFile(
+				join(dir, "last-login.lock"),
+				new Date(START).toISOString(),
+			);
+
+			await expect(store.acquireLoginSlot()).rejects.toMatchObject({
+				code: "COOLDOWN",
+			});
+		});
+
+		it("異常終了で古いロックが残っていれば、自動で消さずエラーにする", async () => {
+			await writeFile(
+				join(dir, "last-login.lock"),
+				new Date(START).toISOString(),
+			);
+			currentTime = START + LOGIN_INTERVAL_MS;
+
+			await expect(store.acquireLoginSlot()).rejects.toMatchObject({
+				code: "CACHE_CORRUPT",
+			});
+		});
+
+		it("ログイン枠の取得後にロックを残さない", async () => {
+			await store.acquireLoginSlot();
+
+			expect(await readdir(dir)).toEqual(["last-login"]);
+		});
+
 		it("時刻ファイルが壊れていてもログインを許可せずエラーにする", async () => {
 			await store.acquireLoginSlot();
 			await writeFile(join(dir, "last-login"), "壊れた内容");
