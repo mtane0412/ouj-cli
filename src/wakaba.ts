@@ -14,6 +14,7 @@ const PORTAL_ORIGIN = "https://www.wakaba.ouj.ac.jp";
 const CAS_ORIGIN = "https://sso.ouj.ac.jp";
 const LOGIN_FORM_SELECTOR = 'form[name="login_loginActionForm"]';
 const MENU_FORM_SELECTOR = 'form[name="common_generalPurposeActionForm"]';
+const NO_DATA_MESSAGE = "表示するデータがありません";
 
 export interface Credentials {
 	username: string;
@@ -29,7 +30,35 @@ interface Menu {
 	external: boolean;
 	/** 画面の HTML を行データへ変換する */
 	parse: (html: string) => Table;
+	/** 画面の検索フォーム。検索条件を指定できる画面だけが持つ */
+	search?: MenuSearch;
 }
+
+/** 画面の検索フォームの送信先と、検索条件を入れる項目の名前 */
+interface MenuSearch {
+	formSelector: string;
+	action: string;
+	yearField: string;
+	termField: string;
+	lectureClassField?: string;
+	/** 既定の画面に結果が出ないため、検索条件の指定が必須かどうか */
+	required: boolean;
+	/** 検索条件のほかに、常に上書きする項目 */
+	overrides?: Record<string, string>;
+}
+
+export interface SearchQuery {
+	year: string;
+	term: string;
+	lectureClass?: string;
+}
+
+/** --type の値と、試験時間割の授業区分の値の対応 */
+export const LECTURE_CLASSES: Record<string, string> = {
+	all: "0",
+	broadcast: "1",
+	online: "3",
+};
 
 export const MENUS = {
 	contacts: {
@@ -60,9 +89,47 @@ export const MENUS = {
 		external: false,
 		parse: parseWeeklySchedule,
 	},
+	"class-contacts": {
+		description:
+			"授業連絡の一覧を取得します。条件を省略すると今学期の一覧を返します",
+		menuCode: "A0201",
+		nextPath: "/classcontact/classContactList/initialize",
+		external: false,
+		parse: (html) => parseSearchResult(html, "#tbl_A01_01"),
+		search: {
+			formSelector: 'form[name="classcontact_classContactActionForm"]',
+			action: "/portal/classcontact/classContactList/selectClassContactList",
+			yearField: "schoolYear",
+			termField: "semesterCode",
+			required: false,
+			// 既定の連絡日の開始日が残ると、過去の学期の連絡が絞られてしまう
+			overrides: { reportDateStart: "" },
+		},
+	},
+	"exam-timetable": {
+		description: "単位認定試験時間割を検索します。--year と --term が必須です",
+		menuCode: "P0101",
+		nextPath: "/SC02020100101/initialize",
+		external: true,
+		parse: (html) => parseSearchResult(html, "#searchResultList"),
+		search: {
+			formSelector: 'form[name="SC02020100101F01Form"]',
+			action: "/kyoumu/SC02020100101/search.do",
+			yearField: "searchCondVo.registerYear",
+			termField: "searchCondVo.registerSemesterCode",
+			lectureClassField: "searchCondVo.lectureClas",
+			required: true,
+		},
+	},
 } as const satisfies Record<string, Menu>;
 
 export type MenuName = keyof typeof MENUS;
+
+/** 画面の検索フォームの定義を返す。検索のない画面は undefined */
+export function menuSearch(name: MenuName): MenuSearch | undefined {
+	const menu: Menu = MENUS[name];
+	return menu.search;
+}
 
 export interface Table {
 	headers: string[];
@@ -166,6 +233,54 @@ export async function openMenu(
 }
 
 /**
+ * 開いた画面の検索フォームを、画面の入力値に検索条件を重ねて1回だけ送信する。
+ * ブラウザと同じく、無効な入力欄と未選択のチェックボックス、ラジオボタンは送らない。
+ */
+export async function searchMenu(
+	client: HttpClient,
+	page: Page,
+	name: MenuName,
+	query: SearchQuery,
+): Promise<Page> {
+	const search = menuSearch(name);
+	if (!search) {
+		throw new OujError("USAGE", `${name} には検索条件を指定できません`);
+	}
+	const $ = cheerio.load(page.body);
+	const form = $(search.formSelector);
+	if (!form.length) {
+		throw new OujError(
+			"SITE_CHANGED",
+			`検索フォームが見つかりません（画面: ${$("title").text().trim()}）`,
+		);
+	}
+	const fields: Record<string, string> = {};
+	form.find("input[name], select[name]").each((_, element) => {
+		const input = $(element);
+		const fieldName = input.attr("name");
+		const type = input.attr("type");
+		if (!fieldName || input.is("[disabled]")) return;
+		if ((type === "checkbox" || type === "radio") && !input.is("[checked]")) {
+			return;
+		}
+		fields[fieldName] = input.is("select")
+			? (input.find("option[selected]").attr("value") ??
+				input.find("option").first().attr("value") ??
+				"")
+			: (input.attr("value") ?? "");
+	});
+	return client.post(`${PORTAL_ORIGIN}${search.action}`, {
+		...fields,
+		...search.overrides,
+		[search.yearField]: query.year,
+		[search.termField]: query.term,
+		...(search.lectureClassField && query.lectureClass
+			? { [search.lectureClassField]: query.lectureClass }
+			: {}),
+	});
+}
+
+/**
  * ログインして指定の1画面だけを開き、取得可否と表の形式を返す。
  * 画面が増えても通信量が増えないよう、複数の画面は開かない。個人情報を出さないよう、行の中身は返さない。
  */
@@ -198,7 +313,16 @@ export function parseTable(html: string, selector: string): Table {
 	}
 	const text = (element: Parameters<typeof $>[0]) =>
 		$(element).text().replace(/\s+/g, " ").trim();
-	const headers = table.find("thead tr").first().find("th").toArray().map(text);
+	// 画面が並べ替えのためだけに持つ「（非表示）」の列は、見出しが空の列と同じく結果から除く
+	const headers = table
+		.find("thead tr")
+		.first()
+		.find("th")
+		.toArray()
+		.map((th) => {
+			const header = text(th);
+			return header.includes("（非表示）") ? "" : header;
+		});
 	const rows = table
 		.find("tbody tr")
 		.toArray()
@@ -218,6 +342,15 @@ export function parseTable(html: string, selector: string): Table {
 			);
 		});
 	return { headers: headers.filter(Boolean), rows };
+}
+
+/** 検索結果の表を変換する。該当なしの案内があれば0件として返し、どちらもなければ parseTable で失敗させる */
+function parseSearchResult(html: string, selector: string): Table {
+	const $ = cheerio.load(html);
+	if (!$(selector).length && $.text().includes(NO_DATA_MESSAGE)) {
+		return { headers: [], rows: [] };
+	}
+	return parseTable(html, selector);
 }
 
 const SCHEDULE_HEADERS = ["日付", "時間", "内容"];

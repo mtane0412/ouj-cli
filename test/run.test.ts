@@ -69,6 +69,8 @@ describe("run", () => {
 				"contacts",
 				"files",
 				"schedule",
+				"class-contacts",
+				"exam-timetable",
 				"doctor",
 				"cache-clear",
 			]) {
@@ -151,6 +153,7 @@ describe("run", () => {
 			expect(fetchTable).toHaveBeenCalledWith(
 				{ username: "学生A", password: "秘密の文字列" },
 				"grades",
+				undefined,
 			);
 			expect(output()).toEqual({
 				source: "network",
@@ -226,6 +229,96 @@ describe("run", () => {
 			stderr = [];
 			expect(await run(["grades"], dependencies)).toBe(7);
 			expect(fetchTable).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	describe("検索条件のある一覧", () => {
+		it("class-contacts は条件なしなら既定の画面をそのまま取得する", async () => {
+			expect(await run(["class-contacts"], dependencies)).toBe(0);
+
+			expect(fetchTable).toHaveBeenCalledWith(
+				expect.anything(),
+				"class-contacts",
+				undefined,
+			);
+		});
+
+		it("class-contacts は年度と学期を検索条件として渡す", async () => {
+			await run(
+				["class-contacts", "--year", "2026", "--term", "1"],
+				dependencies,
+			);
+
+			expect(fetchTable).toHaveBeenCalledWith(
+				expect.anything(),
+				"class-contacts",
+				{ year: "2026", term: "1" },
+			);
+		});
+
+		it("exam-timetable は --type を授業区分の値に変換して渡す", async () => {
+			await run(
+				[
+					"exam-timetable",
+					"--year",
+					"2026",
+					"--term",
+					"2",
+					"--type",
+					"broadcast",
+				],
+				dependencies,
+			);
+
+			expect(fetchTable).toHaveBeenCalledWith(
+				expect.anything(),
+				"exam-timetable",
+				{ year: "2026", term: "2", lectureClass: "1" },
+			);
+		});
+
+		it("同じ条件の再実行はキャッシュを使い、別の条件は別に取得する", async () => {
+			const firstTerm = ["exam-timetable", "--year", "2026", "--term", "1"];
+			await run(firstTerm, dependencies);
+			expect(await run(firstTerm, dependencies)).toBe(0);
+			expect(fetchTable).toHaveBeenCalledTimes(1);
+
+			currentTime += LOGIN_INTERVAL_MS;
+			await run(
+				["exam-timetable", "--year", "2026", "--term", "2"],
+				dependencies,
+			);
+
+			expect(fetchTable).toHaveBeenCalledTimes(2);
+		});
+
+		it.each([
+			["年度なしの exam-timetable", ["exam-timetable", "--term", "1"]],
+			["学期なしの exam-timetable", ["exam-timetable", "--year", "2026"]],
+			["条件なしの exam-timetable", ["exam-timetable"]],
+			["学期だけの class-contacts", ["class-contacts", "--term", "1"]],
+			["4桁でない年度", ["exam-timetable", "--year", "26", "--term", "1"]],
+			["1と2以外の学期", ["exam-timetable", "--year", "2026", "--term", "3"]],
+			[
+				"未知の授業区分",
+				["exam-timetable", "--year", "2026", "--term", "1", "--type", "面接"],
+			],
+			[
+				"class-contacts への --type",
+				["class-contacts", "--year", "2026", "--term", "1", "--type", "all"],
+			],
+			[
+				"検索のない画面への --year",
+				["grades", "--year", "2026", "--term", "1"],
+			],
+			["doctor の検索が必須の画面", ["doctor", "exam-timetable"]],
+			["doctor への --year", ["doctor", "--year", "2026"]],
+		])("%s は通信せず USAGE で失敗する", async (_label, argv) => {
+			expect(await run(argv, dependencies)).toBe(2);
+
+			expect(errorOutput().code).toBe("USAGE");
+			expect(fetchTable).not.toHaveBeenCalled();
+			expect(doctor).not.toHaveBeenCalled();
 		});
 	});
 
