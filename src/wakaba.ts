@@ -688,7 +688,8 @@ function richText(
 ) {
 	const copy = element.clone();
 	copy.find("a[href]").each((_, link) => {
-		$(link).append(`（${$(link).attr("href")}）`);
+		const href = $(link).attr("href");
+		if ($(link).text().trim() !== href) $(link).append(`（${href}）`);
 	});
 	copy.find("br").replaceWith("\n");
 	copy.find("p, li, div, tr").append("\n");

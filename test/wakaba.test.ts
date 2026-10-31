@@ -842,6 +842,23 @@ describe("学内連絡", () => {
 		]);
 	});
 
+	it("表示文字列が URL そのもののリンクは URL を重ねない", async () => {
+		const detail = detailPage.replace(
+			"在学生の皆さん",
+			'<a href="https://example.ouj.ac.jp/">https://example.ouj.ac.jp/</a>',
+		);
+
+		const table = await fetchContact(
+			contactSite([], detail),
+			credentials,
+			"6155",
+		);
+
+		expect(table.rows[2]?.内容.split("\n")[0]).toBe(
+			"https://example.ouj.ac.jp/",
+		);
+	});
+
 	it("一覧にない連絡IDは詳細を開かず USAGE で失敗する", async () => {
 		const posts: RecordedPost[] = [];
 
