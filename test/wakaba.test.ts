@@ -854,7 +854,7 @@ describe("学内連絡", () => {
 			"6155",
 		);
 
-		expect(table.rows[2]?.内容.split("\n")[0]).toBe(
+		expect(table.rows[2]?.内容?.split("\n")[0]).toBe(
 			"https://example.ouj.ac.jp/",
 		);
 	});
