@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { HttpClient } from "../src/http-client.js";
 import {
 	checkMenu,
+	fetchSyllabus,
 	login,
 	MENUS,
 	openMenu,
@@ -589,5 +590,148 @@ describe("parseWeeklySchedule", () => {
 		expect(() => parseWeeklySchedule(html)).toThrow(
 			expect.objectContaining({ code: "SITE_CHANGED" }),
 		);
+	});
+});
+
+describe("fetchSyllabus", () => {
+	const resultRow = (index: number, code: string, name: string) =>
+		`<tr><td>専門科目</td><td>${code}</td><td><a onclick="forwardBroadcastEducationDetail(&#39;${index}&#39;)">${name}</a></td></tr>`;
+	const searchForm = `<form name="SC02060200201F01Form">
+	  <select name="registerTerm"><option value="">選択</option></select>
+	  <input type="text" name="subjectName" value="">
+	  <input type="hidden" name="taglib.html.TOKEN" value="検索トークン">
+	</form>`;
+	const resultPage = (rows: string) => `${searchForm}
+	  <form name="SC02060200201F02Form">
+	    <table id="broadcastEducationVOList"><thead><tr><th>科目区分</th><th>科目コード</th><th>科目名</th></tr></thead>
+	    <tbody>${rows}</tbody></table>
+	    <input type="hidden" name="selectBroadcastEducationIndex" value="">
+	    <input type="hidden" name="taglib.html.TOKEN" value="詳細トークン">
+	  </form>`;
+	const detailPage = `<title>シラバス参照</title><div class="right-module-bold-inner">
+	  <p id="SC_0206_02002_11_SIZE">心理学概論（’２４）<p id="SC_0206_02002_11_SIZE"></p>
+	  <p id="SC_0206_02002_11_BOLD">主任講師名：放送　太郎（放送大学教授）</p>
+	  <p id="SC_0206_02002_11_ALIGNLEFT">【講義概要】<br/>心の働きを学ぶ。<br/><br/>【授業の目標】<br/>基礎を身につける。</p>
+	  <div class="ttb_entry"><div class="row"><div class="col-lg-12 td"><p id="SC_0206_02002_11_SIZESMALL">第1回　心理学とは</p><br/>歴史を学ぶ。</div></div></div>
+	  <div class="ttb_entry"><div class="row"><div class="col-lg-12 td"><p id="SC_0206_02002_11_SIZESMALL">第1回　心理学とは</p><br/>歴史を学ぶ。</div></div></div>
+	  <div class="row"><div class="col-lg-6 th">単位数</div><div class="col-lg-6 td">2単位</div></div>
+	</div>`;
+
+	/** 検索と詳細の応答を返す偽サイト。HOME から開く画面は検索フォームとする */
+	function syllabusSite(posts: RecordedPost[], searchResult: string) {
+		return new HttpClient(async (input, init) => {
+			const url = String(input);
+			if (init?.method === "POST") {
+				posts.push({ url, body: new URLSearchParams(String(init.body)) });
+				if (url.endsWith("/login/preLogin/preLogin")) return new Response("{}");
+				if (url.endsWith("/portal/sso/")) {
+					return new Response(null, {
+						status: 302,
+						headers: { location: CAS_URL },
+					});
+				}
+				if (url.includes("/cas/login")) {
+					return new Response(null, {
+						status: 302,
+						headers: { location: HOME_URL },
+					});
+				}
+				if (url.includes("/search.do")) return new Response(searchResult);
+				if (url.includes("Detail.do")) return new Response(detailPage);
+				return new Response(searchForm);
+			}
+			if (url === PORTAL_URL) return new Response(PORTAL_PAGE);
+			return new Response(url.includes("/cas/login") ? CAS_PAGE : HOME_PAGE);
+		});
+	}
+	const query = { year: "2026", term: "2", name: "心理学" };
+	const pagePosts = (posts: RecordedPost[]) =>
+		posts.filter(({ url }) => /common\/|search\.do|Detail\.do/.test(url));
+
+	it("該当が1件なら詳細を開き、項目と内容の行にする", async () => {
+		const posts: RecordedPost[] = [];
+
+		const table = await fetchSyllabus(
+			syllabusSite(posts, resultPage(resultRow(0, "1234567", "心理学概論"))),
+			credentials,
+			query,
+		);
+
+		// 開く画面はメニュー、検索、詳細の3つだけ
+		expect(pagePosts(posts)).toHaveLength(3);
+		const [, search, detail] = pagePosts(posts);
+		expect(search?.body.get("registerTerm")).toBe("20262");
+		expect(search?.body.get("subjectName")).toBe("心理学");
+		expect(detail?.url).toBe(
+			"https://www.wakaba.ouj.ac.jp/kyoumu/SC02060200201/forwardBroadcastEducationDetail.do",
+		);
+		expect(detail?.body.get("selectBroadcastEducationIndex")).toBe("0");
+		expect(detail?.body.get("taglib.html.TOKEN")).toBe("詳細トークン");
+		expect(table).toEqual({
+			headers: ["項目", "内容"],
+			rows: [
+				{ 項目: "科目名", 内容: "心理学概論（’２４）" },
+				{ 項目: "主任講師名", 内容: "放送 太郎（放送大学教授）" },
+				{ 項目: "講義概要", 内容: "心の働きを学ぶ。" },
+				{ 項目: "授業の目標", 内容: "基礎を身につける。" },
+				{ 項目: "第1回", 内容: "心理学とは 歴史を学ぶ。" },
+				{ 項目: "単位数", 内容: "2単位" },
+			],
+		});
+	});
+
+	it("該当が複数なら詳細を開かず、候補を示して USAGE で失敗する", async () => {
+		const posts: RecordedPost[] = [];
+		const rows =
+			resultRow(0, "1234567", "心理学概論") +
+			resultRow(1, "7654321", "発達心理学");
+
+		const failure = fetchSyllabus(
+			syllabusSite(posts, resultPage(rows)),
+			credentials,
+			query,
+		);
+
+		await expect(failure).rejects.toMatchObject({ code: "USAGE" });
+		await expect(failure).rejects.toThrow("7654321");
+		expect(posts.some(({ url }) => url.includes("Detail.do"))).toBe(false);
+	});
+
+	it("--code で候補を1件に絞って詳細を開く", async () => {
+		const posts: RecordedPost[] = [];
+		const rows =
+			resultRow(0, "1234567", "心理学概論") +
+			resultRow(1, "7654321", "発達心理学");
+
+		await fetchSyllabus(syllabusSite(posts, resultPage(rows)), credentials, {
+			...query,
+			code: "7654321",
+		});
+
+		const detail = posts.find(({ url }) => url.includes("Detail.do"));
+		expect(detail?.body.get("selectBroadcastEducationIndex")).toBe("1");
+	});
+
+	it("該当がなければ USAGE で失敗する", async () => {
+		await expect(
+			fetchSyllabus(
+				syllabusSite(
+					[],
+					`${searchForm}<div class="center">表示するデータがありません。</div>`,
+				),
+				credentials,
+				query,
+			),
+		).rejects.toMatchObject({ code: "USAGE" });
+	});
+
+	it("結果の表も該当なしの案内もなければ SITE_CHANGED で失敗する", async () => {
+		await expect(
+			fetchSyllabus(
+				syllabusSite([], "<title>エラー画面</title>"),
+				credentials,
+				query,
+			),
+		).rejects.toMatchObject({ code: "SITE_CHANGED" });
 	});
 });

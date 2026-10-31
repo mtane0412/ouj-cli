@@ -31,6 +31,7 @@ describe("run", () => {
 	let dependencies: Dependencies;
 	let fetchTable: ReturnType<typeof vi.fn<Dependencies["fetchTable"]>>;
 	let doctor: ReturnType<typeof vi.fn<Dependencies["doctor"]>>;
+	let fetchSyllabus: ReturnType<typeof vi.fn<Dependencies["fetchSyllabus"]>>;
 
 	/** 標準エラーへ書かれた JSON のエラーを取り出す */
 	const errorOutput = () => JSON.parse(stderr.join("")).error;
@@ -43,7 +44,12 @@ describe("run", () => {
 		stderr = [];
 		fetchTable = vi.fn<Dependencies["fetchTable"]>(async () => gradesTable);
 		doctor = vi.fn<Dependencies["doctor"]>(async () => ({ login: "ok" }));
+		fetchSyllabus = vi.fn<Dependencies["fetchSyllabus"]>(async () => ({
+			headers: ["項目", "内容"],
+			rows: [{ 項目: "科目名", 内容: "心理学概論" }],
+		}));
 		dependencies = {
+			fetchSyllabus,
 			env: { OUJ_USERNAME: "学生A", OUJ_PASSWORD: "秘密の文字列" },
 			store: new LocalStore(dir, () => currentTime),
 			fetchTable,
@@ -71,6 +77,7 @@ describe("run", () => {
 				"schedule",
 				"class-contacts",
 				"exam-timetable",
+				"syllabus",
 				"doctor",
 				"cache-clear",
 			]) {
@@ -339,6 +346,73 @@ describe("run", () => {
 			expect(errorOutput().code).toBe("USAGE");
 			expect(fetchTable).not.toHaveBeenCalled();
 			expect(doctor).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("syllabus", () => {
+		const psychology = [
+			"syllabus",
+			"--year",
+			"2026",
+			"--term",
+			"2",
+			"--name",
+			"心理学",
+		];
+
+		it("条件を渡して取得し、同じ条件の再実行はキャッシュを使う", async () => {
+			expect(await run(psychology, dependencies)).toBe(0);
+			expect(fetchSyllabus).toHaveBeenCalledWith(
+				{ username: "学生A", password: "秘密の文字列" },
+				{ year: "2026", term: "2", name: "心理学" },
+			);
+			expect(output().fields).toEqual(["項目", "内容"]);
+
+			stdout = [];
+			expect(await run(psychology, dependencies)).toBe(0);
+			expect(output().source).toBe("cache");
+			expect(fetchSyllabus).toHaveBeenCalledTimes(1);
+		});
+
+		it("--code を渡し、別の条件は別に取得する", async () => {
+			await run(psychology, dependencies);
+			currentTime += LOGIN_INTERVAL_MS;
+
+			await run([...psychology, "--code", "1234567"], dependencies);
+
+			expect(fetchSyllabus).toHaveBeenLastCalledWith(expect.anything(), {
+				year: "2026",
+				term: "2",
+				name: "心理学",
+				code: "1234567",
+			});
+			expect(fetchSyllabus).toHaveBeenCalledTimes(2);
+		});
+
+		it("科目名に記号があっても保存先のディレクトリの外へ書かない", async () => {
+			await run(
+				["syllabus", "--year", "2026", "--term", "2", "--name", "../../外"],
+				dependencies,
+			);
+
+			const files = await readdir(join(dir, "data"));
+			expect(files).toHaveLength(1);
+			expect(files[0]).not.toContain("外");
+		});
+
+		it.each([
+			["科目名なし", ["syllabus", "--year", "2026", "--term", "2"]],
+			["年度なし", ["syllabus", "--term", "2", "--name", "心理学"]],
+			["数字でない科目コード", [...psychology, "--code", "心理学"]],
+			["--type の指定", [...psychology, "--type", "all"]],
+			["他の画面への --name", ["grades", "--name", "心理学"]],
+			["他の画面への --code", ["grades", "--code", "1234567"]],
+		])("%s は通信せず USAGE で失敗する", async (_label, argv) => {
+			expect(await run(argv, dependencies)).toBe(2);
+
+			expect(errorOutput().code).toBe("USAGE");
+			expect(fetchSyllabus).not.toHaveBeenCalled();
+			expect(fetchTable).not.toHaveBeenCalled();
 		});
 	});
 

@@ -215,7 +215,14 @@ export async function openMenu(
 	currentPage: Page,
 	name: MenuName,
 ): Promise<Page> {
-	const menu = MENUS[name];
+	return postMenu(client, currentPage, MENUS[name]);
+}
+
+async function postMenu(
+	client: HttpClient,
+	currentPage: Page,
+	menu: Pick<Menu, "menuCode" | "nextPath" | "external">,
+): Promise<Page> {
 	const hidden = hiddenFields(
 		cheerio.load(currentPage.body),
 		MENU_FORM_SELECTOR,
@@ -233,27 +240,13 @@ export async function openMenu(
 }
 
 /**
- * 開いた画面の検索フォームを、画面の入力値に検索条件を重ねて1回だけ送信する。
- * ブラウザと同じく、無効な入力欄と未選択のチェックボックス、ラジオボタンは送らない。
+ * フォームの入力値を、ブラウザが送信するときと同じ形で集める。
+ * 無効な入力欄、未選択のチェックボックスとラジオボタン、押していないボタンは含めない。
  */
-export async function searchMenu(
-	client: HttpClient,
-	page: Page,
-	name: MenuName,
-	query: SearchQuery,
-): Promise<Page> {
-	const search = menuSearch(name);
-	if (!search) {
-		throw new OujError("USAGE", `${name} には検索条件を指定できません`);
-	}
-	const $ = cheerio.load(page.body);
-	const form = $(search.formSelector);
-	if (!form.length) {
-		throw new OujError(
-			"SITE_CHANGED",
-			`検索フォームが見つかりません（画面: ${$("title").text().trim()}）`,
-		);
-	}
+function formFields(
+	$: cheerio.CheerioAPI,
+	form: ReturnType<cheerio.CheerioAPI>,
+): Record<string, string> {
 	const fields: Record<string, string> = {};
 	const fieldSelector =
 		"input[name]:not([type=submit],[type=reset],[type=image],[type=button],[type=file]), select[name]";
@@ -275,8 +268,30 @@ export async function searchMenu(
 		const isCheckable = type === "checkbox" || type === "radio";
 		fields[fieldName] = input.attr("value") ?? (isCheckable ? "on" : "");
 	});
+	return fields;
+}
+
+/** 開いた画面の検索フォームを、画面の入力値に検索条件を重ねて1回だけ送信する */
+export async function searchMenu(
+	client: HttpClient,
+	page: Page,
+	name: MenuName,
+	query: SearchQuery,
+): Promise<Page> {
+	const search = menuSearch(name);
+	if (!search) {
+		throw new OujError("USAGE", `${name} には検索条件を指定できません`);
+	}
+	const $ = cheerio.load(page.body);
+	const form = $(search.formSelector);
+	if (!form.length) {
+		throw new OujError(
+			"SITE_CHANGED",
+			`検索フォームが見つかりません（画面: ${$("title").text().trim()}）`,
+		);
+	}
 	return client.post(`${PORTAL_ORIGIN}${search.action}`, {
-		...fields,
+		...formFields($, form),
 		...search.overrides,
 		[search.yearField]: query.year,
 		[search.termField]: query.term,
@@ -439,4 +454,192 @@ export function parseWeeklySchedule(html: string): Table {
 		headers: SCHEDULE_HEADERS,
 		rows: rowsByDay.flatMap((events) => [...events.values()]),
 	};
+}
+
+export interface SyllabusQuery {
+	year: string;
+	term: string;
+	name: string;
+	code?: string;
+}
+
+const SYLLABUS_MENU = {
+	menuCode: "Y0101",
+	nextPath: "/SC02060200201/initialize",
+	external: true,
+};
+const SYLLABUS_SEARCH_FORM = 'form[name="SC02060200201F01Form"]';
+const SYLLABUS_ACTION_PREFIX = "/kyoumu/SC02060200201";
+const SYLLABUS_HEADERS = ["項目", "内容"];
+const SYLLABUS_ROOT = ".right-module-bold-inner";
+
+interface SyllabusCandidate {
+	code: string;
+	name: string;
+	/** 詳細画面へ進むための関数名の中間部分（BroadcastEducation など） */
+	kind: string;
+	index: string;
+	form: ReturnType<cheerio.CheerioAPI>;
+}
+
+/** 検索結果の全ての表から、詳細画面へ進める科目を候補として集める */
+function syllabusCandidates($: cheerio.CheerioAPI): SyllabusCandidate[] {
+	const candidates: SyllabusCandidate[] = [];
+	$('form table[id$="VOList"]').each((_, table) => {
+		const codeColumn = $(table)
+			.find("thead th")
+			.toArray()
+			.findIndex((th) => $(th).text().trim() === "科目コード");
+		$(table)
+			.find("tbody tr")
+			.each((_, row) => {
+				const link = $(row).find("a[onclick]").first();
+				// 詳細へ進む関数の呼び出しから、種類と行の番号を取り出す
+				const call = /forward(\w+)Detail\('(\d+)'\)/.exec(
+					link.attr("onclick") ?? "",
+				);
+				const kind = call?.[1];
+				const index = call?.[2];
+				if (!kind || !index) {
+					throw new OujError(
+						"SITE_CHANGED",
+						"シラバスの検索結果の形式が想定と異なります",
+					);
+				}
+				candidates.push({
+					code: $(row).find("td").eq(codeColumn).text().trim(),
+					name: link.text().replace(/\s+/g, " ").trim(),
+					kind,
+					index,
+					form: $(table).closest("form"),
+				});
+			});
+	});
+	return candidates;
+}
+
+/** 検索結果から詳細を開く1科目を決める。決められない場合は通信せず失敗する */
+function selectSyllabusCandidate(
+	html: string,
+	query: SyllabusQuery,
+): { $: cheerio.CheerioAPI; candidate: SyllabusCandidate } {
+	const $ = cheerio.load(html);
+	const candidates = syllabusCandidates($);
+	if (
+		candidates.length === 0 &&
+		!$(".center").text().includes(NO_DATA_MESSAGE)
+	) {
+		throw new OujError(
+			"SITE_CHANGED",
+			`シラバスの検索結果が見つかりません（画面: ${$("title").text().trim()}）`,
+		);
+	}
+	const matched = query.code
+		? candidates.filter(({ code }) => code === query.code)
+		: candidates;
+	const [candidate, ...others] = matched;
+	if (!candidate) {
+		throw new OujError(
+			"USAGE",
+			`条件に合う科目がありません（科目名: ${query.name}${query.code ? `、科目コード: ${query.code}` : ""}）`,
+		);
+	}
+	if (others.length > 0) {
+		const list = matched.map(({ code, name }) => `${code} ${name}`).join("、");
+		throw new OujError(
+			"USAGE",
+			`該当する科目が${matched.length}件あります。--code で1件に絞ってください（${list}）`,
+		);
+	}
+	return { $, candidate };
+}
+
+/** シラバスの詳細画面を、項目と内容の行データへ変換する */
+export function parseSyllabus(html: string): Table {
+	const $ = cheerio.load(html);
+	const root = $(SYLLABUS_ROOT);
+	const name = root
+		.find('[id="SC_0206_02002_11_SIZE"]')
+		.toArray()
+		.map((element) => $(element).text().trim())
+		.find(Boolean);
+	if (!name) {
+		throw new OujError(
+			"SITE_CHANGED",
+			`シラバスの形式が想定と異なります（画面: ${$("title").text().trim()}）`,
+		);
+	}
+	const clean = (text: string) => text.replace(/\s+/g, " ").trim();
+	// 画面幅ごとに同じ内容を2回持つ部分があるため、項目名でまとめる
+	const items = new Map<string, string>([["科目名", name]]);
+	const lecturer = clean(
+		root.find('[id="SC_0206_02002_11_BOLD"]').first().text(),
+	);
+	const [lecturerLabel, lecturerName] = lecturer.split("：");
+	if (lecturerLabel && lecturerName) items.set(lecturerLabel, lecturerName);
+	// 概要は【見出し】で区切られた1つの段落になっている
+	const summary = root.find('[id="SC_0206_02002_11_ALIGNLEFT"]').first().text();
+	for (const match of summary.matchAll(/【([^】]+)】([^【]*)/g)) {
+		const [, label, content] = match;
+		if (label && content) items.set(label, clean(content));
+	}
+	root.find(".ttb_entry .col-lg-12.td").each((_, element) => {
+		const heading = $(element)
+			.find('[id="SC_0206_02002_11_SIZESMALL"]')
+			.first();
+		const [round, ...theme] = clean(heading.text()).split(" ");
+		if (!round) return;
+		const body = clean($(element).text()).slice(clean(heading.text()).length);
+		items.set(round, clean(`${theme.join(" ")} ${body}`));
+	});
+	root.find(".th").each((_, element) => {
+		const label = clean($(element).text());
+		const value = $(element).next(".td");
+		if (label && value.length) items.set(label, clean(value.text()));
+	});
+	return {
+		headers: SYLLABUS_HEADERS,
+		rows: [...items].map(([label, content]) => ({
+			項目: label,
+			内容: content,
+		})),
+	};
+}
+
+/**
+ * ログインしてシラバスを1科目だけ取得する。
+ * 開く画面はメニュー、検索、詳細の3つで、該当が1件に絞れないときは詳細を開かない。
+ */
+export async function fetchSyllabus(
+	client: HttpClient,
+	credentials: Credentials,
+	query: SyllabusQuery,
+): Promise<Table> {
+	const home = await login(client, credentials);
+	const searchPage = await postMenu(client, home, SYLLABUS_MENU);
+	const $search = cheerio.load(searchPage.body);
+	const form = $search(SYLLABUS_SEARCH_FORM);
+	if (!form.length) {
+		throw new OujError(
+			"SITE_CHANGED",
+			`シラバスの検索フォームが見つかりません（画面: ${$search("title").text().trim()}）`,
+		);
+	}
+	const result = await client.post(
+		`${PORTAL_ORIGIN}${SYLLABUS_ACTION_PREFIX}/search.do`,
+		{
+			...formFields($search, form),
+			registerTerm: `${query.year}${query.term}`,
+			subjectName: query.name,
+		},
+	);
+	const { $, candidate } = selectSyllabusCandidate(result.body, query);
+	const detail = await client.post(
+		`${PORTAL_ORIGIN}${SYLLABUS_ACTION_PREFIX}/forward${candidate.kind}Detail.do`,
+		{
+			...formFields($, candidate.form),
+			[`select${candidate.kind}Index`]: candidate.index,
+		},
+	);
+	return parseSyllabus(detail.body);
 }
