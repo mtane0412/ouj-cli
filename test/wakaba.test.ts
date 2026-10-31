@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { HttpClient } from "../src/http-client.js";
-import { login, openMenu, parseTable } from "../src/wakaba.js";
+import { checkMenu, login, openMenu, parseTable } from "../src/wakaba.js";
 
 const PORTAL_URL = "https://www.wakaba.ouj.ac.jp/portal/";
 // 新規セッションのログインフォームにはトークンがない（実サイトで確認済み）
@@ -29,11 +29,13 @@ type RecordedPost = { url: string; body: URLSearchParams };
  * WAKABA のログイン手順を再現する偽サイトを作る。
  * @param posts 受け取った POST を記録する配列
  * @param afterCasPost CAS へ POST した後の応答。既定はホーム画面へのリダイレクト
+ * @param menuPage メニューから開いた画面の HTML
  */
 function fakeSite(
 	posts: RecordedPost[],
 	afterCasPost: () => Response = () =>
 		new Response(null, { status: 302, headers: { location: HOME_URL } }),
+	menuPage = "<title>移動先</title>",
 ) {
 	return new HttpClient(async (input, init) => {
 		const url = String(input);
@@ -47,7 +49,7 @@ function fakeSite(
 				});
 			}
 			if (url.includes("/cas/login")) return afterCasPost();
-			return new Response("<title>移動先</title>");
+			return new Response(menuPage);
 		}
 		if (url === PORTAL_URL) return new Response(PORTAL_PAGE);
 		if (url.includes("/portal/other")) {
@@ -232,6 +234,49 @@ describe("openMenu", () => {
 				"files",
 			),
 		).rejects.toThrow("フォーム");
+	});
+});
+
+describe("checkMenu", () => {
+	const contactsPage = `<title>学内連絡</title><table id="tbl_commoncontact_rcv">
+	  <thead><tr><th>件名</th><th>発信者</th></tr></thead>
+	  <tbody><tr><td>休講のお知らせ</td><td>教務課</td></tr></tbody>
+	</table>`;
+	const siteWithContacts = (posts: RecordedPost[]) =>
+		fakeSite(posts, undefined, contactsPage);
+
+	it("指定の1画面だけを開き、メニューへの遷移は1回で済ませる", async () => {
+		const posts: RecordedPost[] = [];
+
+		await checkMenu(siteWithContacts(posts), credentials, "contacts");
+
+		const menuPosts = posts.filter(({ url }) =>
+			url.includes("/portal/common/"),
+		);
+		expect(menuPosts).toHaveLength(1);
+		expect(menuPosts[0]?.body.get("menuCode")).toBe("B0201");
+	});
+
+	it("列名と件数を返し、行の中身は返さない", async () => {
+		const result = await checkMenu(
+			siteWithContacts([]),
+			credentials,
+			"contacts",
+		);
+
+		expect(result).toMatchObject({
+			login: "ok",
+			menu: "contacts",
+			headers: ["件名", "発信者"],
+			rowCount: 1,
+		});
+		expect(JSON.stringify(result)).not.toContain("休講のお知らせ");
+	});
+
+	it("表が見つからない場合は SITE_CHANGED で失敗する", async () => {
+		await expect(
+			checkMenu(fakeSite([]), credentials, "contacts"),
+		).rejects.toMatchObject({ code: "SITE_CHANGED" });
 	});
 });
 

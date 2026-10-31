@@ -20,11 +20,14 @@ export interface Dependencies {
 		credentials: Credentials,
 		name: MenuName,
 	) => Promise<StoredTable>;
-	/** ログインして接続と表の形式を確認する */
-	doctor: (credentials: Credentials) => Promise<unknown>;
+	/** ログインして指定の1画面の接続と表の形式を確認する */
+	doctor: (credentials: Credentials, name: MenuName) => Promise<unknown>;
 	stdout: (text: string) => void;
 	stderr: (text: string) => void;
 }
+
+/** doctor が対象を省略されたときに開く代表の画面。ポータル内の画面のため教務側のアプリに触れない */
+const DEFAULT_DOCTOR_MENU: MenuName = "contacts";
 
 const TABLE_ACCESS =
 	"有効なキャッシュがあれば通信しません。なければログインします。";
@@ -43,8 +46,8 @@ const COMMANDS: Record<string, { description: string; access: string }> = {
 		]),
 	),
 	doctor: {
-		description: "接続と表の形式を確認します。個人情報は出力しません",
-		access: "毎回ログインし、全画面を開きます。",
+		description: `接続と1画面の表の形式を確認します。個人情報は出力しません（ouj doctor [${Object.keys(MENUS).join("|")}]、既定は ${DEFAULT_DOCTOR_MENU}）`,
+		access: "毎回ログインし、指定の1画面だけを開きます。",
 	},
 	"cache-clear": {
 		description: "保存した一覧を消します",
@@ -207,14 +210,24 @@ async function runTableCommand(
 	};
 }
 
-async function runDoctor(dependencies: Dependencies): Promise<unknown> {
+async function runDoctor(
+	target: string | undefined,
+	dependencies: Dependencies,
+): Promise<unknown> {
 	const { env, store, doctor } = dependencies;
+	const name = target ?? DEFAULT_DOCTOR_MENU;
+	if (!isMenuName(name)) {
+		throw new OujError(
+			"USAGE",
+			`doctor で確認できない画面です: ${name}（指定できる画面: ${Object.keys(MENUS).join(", ")}）`,
+		);
+	}
 	const credentials = {
 		username: requireEnv(env, "OUJ_USERNAME"),
 		password: requireEnv(env, "OUJ_PASSWORD"),
 	};
 	await store.acquireLoginSlot();
-	return doctor(credentials);
+	return doctor(credentials, name);
 }
 
 async function execute(
@@ -223,7 +236,8 @@ async function execute(
 ): Promise<void> {
 	const { values, positionals } = parseCommandLine(argv);
 	const [command, ...extra] = positionals;
-	if (extra.length > 0) {
+	// doctor だけは確認する画面を1つ受け取る
+	if (extra.length > (command === "doctor" ? 1 : 0)) {
 		throw new OujError("USAGE", "コマンドを1つ指定してください");
 	}
 	if (values.help) {
@@ -252,7 +266,7 @@ async function execute(
 	if (isTableCommand) {
 		result = await runTableCommand(command, values, dependencies);
 	} else if (command === "doctor") {
-		result = await runDoctor(dependencies);
+		result = await runDoctor(extra[0], dependencies);
 	} else if (command === "cache-clear") {
 		await dependencies.store.clearCache();
 		result = { cleared: true };
