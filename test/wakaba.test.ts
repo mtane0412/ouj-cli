@@ -1075,3 +1075,54 @@ describe("授業共有ファイル", () => {
 		).rejects.toMatchObject({ code: "SITE_CHANGED" });
 	});
 });
+
+describe("参照用の一覧", () => {
+	const fileList = (title: string) =>
+		`<table id="tbl_commonFileList"><thead><tr><th></th><th>カテゴリ</th><th>タイトル</th><th></th></tr></thead>
+		 <tbody><tr><td></td><td>手続き</td><td>${title}</td><td>123</td></tr></tbody></table>`;
+
+	it.each([
+		["guide", "B0323"],
+		["campus-life", "B0320"],
+		["forms", "B0321"],
+		["facilities", "B0322"],
+		["library", "A0212"],
+	] as const)(
+		"%s はメニューコード %s で文書の一覧を開いて解析する",
+		async (name, code) => {
+			const posts: RecordedPost[] = [];
+
+			await openMenu(fakeSite(posts), { url: HOME_URL, body: HOME_PAGE }, name);
+
+			expect(posts[0]?.body.get("menuCode")).toBe(code);
+			expect(posts[0]?.body.get("nextPath")).toBe(
+				"/commonfile/commonFile/initialize",
+			);
+			expect(MENUS[name].parse(fileList("休学願")).rows).toEqual([
+				{ カテゴリ: "手続き", タイトル: "休学願" },
+			]);
+		},
+	);
+
+	it("faq は質問と回答の一覧を解析する", () => {
+		const html = `<table id="tbl_commonFaq"><thead><tr><th>カテゴリ</th><th>質問</th><th>回答</th></tr></thead>
+		  <tbody><tr><td>学習</td><td>試験はいつですか</td><td>時間割を確認してください</td></tr></tbody></table>`;
+
+		expect(MENUS.faq.parse(html).rows).toEqual([
+			{
+				カテゴリ: "学習",
+				質問: "試験はいつですか",
+				回答: "時間割を確認してください",
+			},
+		]);
+	});
+
+	it("links は学内リンクの一覧を解析する", () => {
+		const html = `<table id="tbl_commonLinkList"><thead><tr><th></th><th>タイトル</th><th>カテゴリ</th><th>コメント</th></tr></thead>
+		  <tbody><tr><td></td><td>図書館</td><td>学習</td><td>蔵書検索</td></tr></tbody></table>`;
+
+		expect(MENUS.links.parse(html).rows).toEqual([
+			{ タイトル: "図書館", カテゴリ: "学習", コメント: "蔵書検索" },
+		]);
+	});
+});

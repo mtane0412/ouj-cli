@@ -60,6 +60,13 @@ export const LECTURE_CLASSES: Record<string, string> = {
 	online: "3",
 };
 
+const COMMON_FILE_PATH = "/commonfile/commonFile/initialize";
+
+/** 学習案内や資料室など、文書の一覧の画面に共通の表を変換する */
+function parseCommonFileList(html: string): Table {
+	return parseTable(html, "#tbl_commonFileList");
+}
+
 export const MENUS = {
 	contacts: {
 		description: "未読の学内連絡の一覧を取得します",
@@ -88,6 +95,57 @@ export const MENUS = {
 		nextPath: "/schedule/weeklySchedule/initialize",
 		external: false,
 		parse: parseWeeklySchedule,
+	},
+	guide: {
+		description: "学習案内の文書の一覧を取得します。ファイル本体は取得しません",
+		menuCode: "B0323",
+		nextPath: COMMON_FILE_PATH,
+		external: false,
+		parse: parseCommonFileList,
+	},
+	"campus-life": {
+		description: "学生生活の文書の一覧を取得します。ファイル本体は取得しません",
+		menuCode: "B0320",
+		nextPath: COMMON_FILE_PATH,
+		external: false,
+		parse: parseCommonFileList,
+	},
+	forms: {
+		description:
+			"各種届出・申請様式の文書の一覧を取得します。ファイル本体は取得しません",
+		menuCode: "B0321",
+		nextPath: COMMON_FILE_PATH,
+		external: false,
+		parse: parseCommonFileList,
+	},
+	facilities: {
+		description:
+			"附属施設・情報システムの文書の一覧を取得します。ファイル本体は取得しません",
+		menuCode: "B0322",
+		nextPath: COMMON_FILE_PATH,
+		external: false,
+		parse: parseCommonFileList,
+	},
+	library: {
+		description: "資料室の文書の一覧を取得します。ファイル本体は取得しません",
+		menuCode: "A0212",
+		nextPath: COMMON_FILE_PATH,
+		external: false,
+		parse: parseCommonFileList,
+	},
+	faq: {
+		description: "学内FAQの一覧を取得します",
+		menuCode: "B0305",
+		nextPath: "/commonfaq/commonFaqSearch/initialize",
+		external: false,
+		parse: (html) => parseTable(html, "#tbl_commonFaq"),
+	},
+	links: {
+		description: "学内リンクの一覧を取得します",
+		menuCode: "B0304",
+		nextPath: "/commonlink/commonLinkList/initialize",
+		external: false,
+		parse: (html) => parseTable(html, "#tbl_commonLinkList"),
 	},
 	"class-contacts": {
 		description:
