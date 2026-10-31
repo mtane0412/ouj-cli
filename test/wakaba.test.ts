@@ -388,6 +388,16 @@ describe("parseWeeklySchedule", () => {
 		]);
 	});
 
+	it("属性のついた br でも行を分ける", () => {
+		const html = calendar(
+			`<tr><th>10:00|</th>${cell('10:00-10:45<br class="改行"/>心理学概論')}${emptyCells(6)}</tr>`,
+		);
+
+		expect(parseWeeklySchedule(html).rows).toEqual([
+			{ 日付: "10/26(月)", 時間: "10:00-10:45", 内容: "心理学概論" },
+		]);
+	});
+
 	it("時刻のない行事は、行の見出しを時間にする", () => {
 		const html = calendar(
 			`<tr><th>行事</th>${cell("開講式")}${emptyCells(6)}</tr>`,
@@ -409,6 +419,10 @@ describe("parseWeeklySchedule", () => {
 		[
 			"日付の見出しが7日分でない表",
 			'<table class="calendar-body table"><thead><tr><th></th><th>10/26(月)</th></tr></thead></table>',
+		],
+		[
+			"予定の入れ物がない欄",
+			calendar(`<tr><th>09:00|</th>${"<td></td>".repeat(7)}</tr>`),
 		],
 		[
 			"欄の数が日付と合わない行",

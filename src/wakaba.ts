@@ -234,7 +234,7 @@ function parseScheduleCell(
 	rowLabel: string,
 ): { time: string; lines: string[] }[] {
 	const lines = (content.html() ?? "")
-		.split(/<br\s*\/?>/i)
+		.split(/<br\b[^>]*>/i)
 		.map((line) => $(`<div>${line}</div>`).text().replace(/\s+/g, " ").trim())
 		.filter(Boolean);
 	const events: { time: string; lines: string[] }[] = [];
@@ -278,17 +278,19 @@ export function parseWeeklySchedule(html: string): Table {
 			);
 		}
 		cells.forEach((cell, dayIndex) => {
-			const events = parseScheduleCell(
-				$,
-				$(cell).find(".div_content"),
-				rowLabel,
-			);
-			for (const { time, lines } of events) {
-				const content = lines.join(" ");
-				rowsByDay[dayIndex]?.set(`${time} ${content}`, {
+			const content = $(cell).find(".div_content");
+			if (!content.length) {
+				throw new OujError(
+					"SITE_CHANGED",
+					"週間カレンダーの欄に予定の入れ物が見つかりません",
+				);
+			}
+			for (const { time, lines } of parseScheduleCell($, content, rowLabel)) {
+				const description = lines.join(" ");
+				rowsByDay[dayIndex]?.set(`${time} ${description}`, {
 					日付: dates[dayIndex] ?? "",
 					時間: time,
-					内容: content,
+					内容: description,
 				});
 			}
 		});
